@@ -1,6 +1,8 @@
 sanic~=25.3.0
 #uvloop~=0.21.0; platform_system != "Windows"
 yt-dlp~=2026.02.04
+yt-dlp-ejs~=0.4.0
 #orjson~=3.10.18
 spotipy~=2.25.1
+
 
