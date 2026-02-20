@@ -518,7 +518,12 @@ class Actions:
     async def handshake(message: dict, ws: Websocket, _request: Request):
         client_id = f"{id(ws):x}"
         client_version = message.get("client_version")
-        if client_version and client_version != VERSION:
+        if not client_version:
+            return {
+                "action": "error",
+                "message": "Client version required",
+            }
+        if client_version != VERSION:
             return {
                 "action": "error",
                 "message": "Client version mismatch",

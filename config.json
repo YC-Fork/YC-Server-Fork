@@ -1,0 +1,8 @@
+{
+  "cookie_file": "/path/to/cookies.txt",
+  "js_runtimes": {
+    "node": {
+      "path": "/path/to/node"
+    }
+  }
+}
