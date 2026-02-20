@@ -8,8 +8,10 @@ Download Functionality of YC
 # Built-in modules
 from asyncio import run_coroutine_threadsafe
 from hashlib import sha1
+import json
+from json import JSONDecodeError
 from os import getenv, listdir
-from os.path import abspath, dirname, join
+from os.path import abspath, dirname, exists, join
 from tempfile import TemporaryDirectory
 from typing import Any, Dict, Optional, Tuple
 from urllib.parse import urlparse
@@ -48,6 +50,8 @@ from yt_dlp import YoutubeDL
 # pylint: disable=too-many-branches
 
 DATA_FOLDER = join(dirname(abspath(__file__)), "data")
+ROOT_DIR = dirname(dirname(dirname(abspath(__file__))))
+CONFIG_PATH = join(ROOT_DIR, "config.json")
 FFMPEG_PATH = getenv("FFMPEG_PATH", "ffmpeg")
 SANJUUNI_PATH = getenv("SANJUUNI_PATH", "sanjuuni")
 DISABLE_OPENCL = bool(getenv("DISABLE_OPENCL"))
@@ -68,8 +72,44 @@ def is_direct_audio_stream_url(url: str) -> bool:
     parsed = urlparse(url)
     if parsed.scheme not in ("http", "https"):
         return False
-    path = (parsed.path or "").lower()
-    return any(path.endswith(ext) for ext in DIRECT_AUDIO_EXTENSIONS)
+    path = (parsed.path or "").lower().rstrip("/")
+    if any(path.endswith(ext) for ext in DIRECT_AUDIO_EXTENSIONS):
+        return True
+    if not path:
+        return False
+    last_segment = path.rsplit("/", 1)[-1]
+    direct_names = {ext.lstrip(".") for ext in DIRECT_AUDIO_EXTENSIONS}
+    return last_segment in direct_names
+
+
+def is_direct_audio_stream_info(info: dict) -> bool:
+    """Returns True if yt-dlp info looks like a direct audio stream."""
+    audio_url = pick_audio_url(info)
+    if audio_url and is_direct_audio_stream_url(audio_url):
+        return True
+    if info.get("protocol") not in ("http", "https"):
+        return False
+    if info.get("vcodec") and info.get("vcodec") != "none":
+        return False
+    if info.get("acodec") == "none":
+        return False
+    return info.get("duration") in (None, 0)
+
+
+def load_config() -> Dict[str, Any]:
+    """Loads optional config.json settings."""
+    if not exists(CONFIG_PATH):
+        return {}
+    try:
+        with open(CONFIG_PATH, "r", encoding="utf-8") as file:
+            data = json.load(file)
+    except (OSError, JSONDecodeError) as exc:
+        logger.warning("Failed to read config.json: %s", exc)
+        return {}
+    if not isinstance(data, dict):
+        logger.warning("config.json must be a JSON object")
+        return {}
+    return data
 
 
 def live_stream_id_from_url(url: str) -> str:
@@ -99,7 +139,7 @@ def pick_audio_url(info: dict) -> Optional[str]:
 
 
 def download_video(
-    temp_dir: str, media_id: str, resp: Websocket, loop, width: int, height: int
+        temp_dir: str, media_id: str, resp: Websocket, loop, width: int, height: int
 ):
     """
     Converts the downloaded video to 32vid
@@ -190,12 +230,12 @@ def download_audio(temp_dir: str, media_id: str, resp: Websocket, loop):
 
 
 def download(
-    url: str,
-    resp: Websocket,
-    loop,
-    width: int,
-    height: int,
-    spotify_url_processor: SpotifyURLProcessor,
+        url: str,
+        resp: Websocket,
+        loop,
+        width: int,
+        height: int,
+        spotify_url_processor: SpotifyURLProcessor,
 ) -> Tuple[Dict[str, Any], list, Optional[Dict]]:
     """
     Downloads and converts the media from the give URL
@@ -276,6 +316,9 @@ def download(
 
     # FIXME: Cleanup on Exception
     with TemporaryDirectory(prefix="youcube-") as temp_dir:
+        config = load_config()
+        cookie_file = config.get("cookie_file")
+        js_runtimes = config.get("js_runtimes")
         yt_dl_options = {
             "format": "bestaudio/best",
             "outtmpl": join(temp_dir, "%(id)s.%(ext)s"),
@@ -284,16 +327,16 @@ def download(
             "extract_flat": "in_playlist",
             "progress_hooks": [my_hook],
             "logger": YTDLPLogger(),
-            "cookiefile": "/path/to/your/cookie.txt",
-            "js_runtimes": {
-                "node": {"path": "/path/to/your/node/bin"}
-            },
             "extractor_args": {
                 "youtube": {
                     "player_client": ["web"]
                 }
             }
         }
+        if cookie_file:
+            yt_dl_options["cookiefile"] = cookie_file
+        if js_runtimes:
+            yt_dl_options["js_runtimes"] = js_runtimes
 
         yt_dl = YoutubeDL(yt_dl_options)
 
@@ -342,9 +385,27 @@ def download(
         so we need to get missing information by running the extractor again.
         """
         if data.get("extractor") == "youtube" and (
-            data.get("view_count") is None or data.get("like_count") is None
+                data.get("view_count") is None or data.get("like_count") is None
         ):
             data = yt_dl.extract_info(data.get("id"), download=False)
+
+        if not is_video and is_direct_audio_stream_info(data):
+            audio_url = pick_audio_url(data) or url
+            media_id = live_stream_id_from_url(audio_url)
+            create_data_folder_if_not_present()
+            out = {
+                "action": "media",
+                "id": media_id,
+                "title": data.get("title") or url,
+                "like_count": data.get("like_count"),
+                "view_count": data.get("view_count"),
+                "is_live": True,
+            }
+            return (
+                out,
+                [get_audio_name(media_id)],
+                {"source_url": audio_url, "media_id": media_id},
+            )
 
         media_id = data.get("id")
 

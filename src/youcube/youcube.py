@@ -171,6 +171,7 @@ def start_live_audio_stream(
     file_path = join(DATA_FOLDER, file_name)
     stop_event = Event()
     entry = {
+        "client_id": id(resp),
         "file_name": file_name,
         "file_path": file_path,
         "last_used": datetime.now(),
@@ -195,6 +196,14 @@ def start_live_audio_stream(
             "-loglevel",
             "error",
             "-nostdin",
+            "-fflags",
+            "nobuffer",
+            "-flags",
+            "low_delay",
+            "-analyzeduration",
+            "0",
+            "-probesize",
+            "32768",
             "-reconnect",
             "1",
             "-reconnect_streamed",
@@ -356,6 +365,7 @@ class Actions:
         url = message.get("url")
         if error := assert_resp("url", url, str):
             return error
+        url = url.strip()
         # TODO: assert_resp width and height
         out, files, live_info = await run_function_in_thread_from_async_function(
             download,
@@ -367,8 +377,7 @@ class Actions:
             spotify_url_processor,
         )
         if live_info:
-            live_streams = request.app.ctx.live_streams
-            live_streams_lock = request.app.ctx.live_streams_lock
+            live_streams, live_streams_lock = ensure_live_stream_ctx(request.app)
             media_id = live_info.get("media_id")
             with live_streams_lock:
                 existing = live_streams.get(media_id)
@@ -384,6 +393,9 @@ class Actions:
                 live_streams,
                 live_streams_lock,
             )
+            await resp.send(
+                dumps({"action": "status", "message": "Buffering live stream ..."})
+            )
             return out
 
         for file in files:
@@ -391,7 +403,7 @@ class Actions:
         return out
 
     @staticmethod
-    async def get_chunk(message: dict, _unused, request: Request):
+    async def get_chunk(message: dict, ws: Websocket, request: Request):
         # get "chunkindex"
         chunkindex = message.get("chunkindex")
         if error := assert_resp("chunkindex", chunkindex, int):
@@ -406,14 +418,24 @@ class Actions:
             file_name = get_audio_name(message.get("id"))
             file = join(DATA_FOLDER, file_name)
 
-            live_streams = request.app.ctx.live_streams
-            live_streams_lock = request.app.ctx.live_streams_lock
-            with live_streams_lock:
-                live_entry = live_streams.get(media_id)
-                if live_entry:
-                    live_entry["last_used"] = datetime.now()
+            live_entry = None
+            if hasattr(request.app.ctx, "live_streams") and hasattr(
+                request.app.ctx, "live_streams_lock"
+            ):
+                live_streams, live_streams_lock = ensure_live_stream_ctx(request.app)
+                with live_streams_lock:
+                    live_entry = live_streams.get(media_id)
+                    if live_entry:
+                        live_entry["last_used"] = datetime.now()
 
             if live_entry:
+                if chunkindex == 0 and not live_entry.get("buffering_notified"):
+                    live_entry["buffering_notified"] = True
+                    await ws.send(
+                        dumps(
+                            {"action": "status", "message": "Buffering live stream ..."}
+                        )
+                    )
                 chunk = await get_live_chunk(file, chunkindex, live_entry, live_streams_lock)
                 if not chunk:
                     return {"action": "error", "message": "Live stream ended"}
@@ -496,6 +518,28 @@ app.config.WEBSOCKET_PING_INTERVAL = 0
 if getenv("SANIC_NO_UVLOOP"):
     app.config.USE_UVLOOP = False
 
+
+def ensure_live_stream_ctx(app: Sanic) -> Tuple[dict, Lock]:
+    """Ensure live stream storage exists for the current process."""
+    if not hasattr(app.ctx, "live_streams"):
+        app.ctx.live_streams = {}
+    if not hasattr(app.ctx, "live_streams_lock"):
+        app.ctx.live_streams_lock = Lock()
+    return app.ctx.live_streams, app.ctx.live_streams_lock
+
+
+def stop_live_streams_for_client(app: Sanic, client_id: int) -> None:
+    """Stops live streams that belong to a disconnected client."""
+    live_streams, live_streams_lock = ensure_live_stream_ctx(app)
+    with live_streams_lock:
+        entries = list(live_streams.values())
+    for entry in entries:
+        if entry.get("client_id") != client_id:
+            continue
+        stop_event = entry.get("stop_event")
+        if stop_event:
+            stop_event.set()
+
 actions = {}
 
 # add all actions from default action set
@@ -554,8 +598,7 @@ async def ready(app: Sanic, _):
 async def main_start(app: Sanic):
     """See https://sanic.dev/en/guide/basics/listeners.html"""
     app.shared_ctx.data = Manager().dict()
-    app.ctx.live_streams = {}
-    app.ctx.live_streams_lock = Lock()
+    ensure_live_stream_ctx(app)
 
     if which(FFMPEG_PATH) is None:
         logger.warning("FFmpeg not found.")
@@ -636,19 +679,26 @@ async def wshandler(request: Request, ws: Websocket):
 
     logger.debug("%sMy headers are: %s", prefix, request.headers)
 
-    while True:
-        message = await ws.recv()
-        logger.debug("%sMessage: %s", prefix, message)
+    try:
+        while True:
+            message = await ws.recv()
+            if message is None:
+                break
+            logger.debug("%sMessage: %s", prefix, message)
 
-        try:
-            message: dict = load_json(message)
-        except JSONDecodeError:
-            logger.debug("%sFaild to parse Json", prefix)
-            await ws.send(dumps({"action": "error", "message": "Faild to parse Json"}))
+            try:
+                message: dict = load_json(message)
+            except JSONDecodeError:
+                logger.debug("%sFaild to parse Json", prefix)
+                await ws.send(dumps({"action": "error", "message": "Faild to parse Json"}))
+                continue
 
-        if message.get("action") in actions:
-            response = await actions[message.get("action")](message, ws, request)
-            await ws.send(dumps(response))
+            if message.get("action") in actions:
+                response = await actions[message.get("action")](message, ws, request)
+                await ws.send(dumps(response))
+    finally:
+        stop_live_streams_for_client(request.app, id(ws))
+        logger.info("%sDisconnected!", prefix)
 
 
 def main() -> None:
