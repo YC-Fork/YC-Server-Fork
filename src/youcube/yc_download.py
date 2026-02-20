@@ -63,6 +63,7 @@ DIRECT_AUDIO_EXTENSIONS = (
     ".opus",
     ".flac",
     ".wav",
+    ".m3u",
     ".m3u8",
 )
 

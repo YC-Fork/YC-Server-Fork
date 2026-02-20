@@ -56,7 +56,7 @@ from yc_utils import (
     is_save,
 )
 
-VERSION = "0.1.0"  # https://commandcracker.github.io/YouCube/
+VERSION = "0.1.1"  # https://commandcracker.github.io/YouCube/
 
 # one dfpwm chunk is 16 bits
 CHUNK_SIZE = 16
@@ -164,24 +164,31 @@ def start_live_audio_stream(
     loop,
     live_streams: dict,
     live_streams_lock: Lock,
+    client_id: int,
 ) -> None:
     """Starts a live audio stream and writes dfpwm output to disk."""
     file_name = get_audio_name(media_id)
     file_path = join(DATA_FOLDER, file_name)
     stop_event = Event()
     entry = {
-        "client_id": id(resp),
+        "media_id": media_id,
+        "clients": {client_id},
         "file_name": file_name,
         "file_path": file_path,
         "last_used": datetime.now(),
         "stop_event": stop_event,
         "ended": False,
+        "delete_on_end": False,
+        "start_time": monotonic(),
     }
 
     create_data_folder_if_not_present()
 
     if exists(file_path):
-        remove(file_path)
+        try:
+            remove(file_path)
+        except PermissionError:
+            logger.warning("Live stream file in use, reusing: %s", file_path)
 
     def run():
         run_coroutine_threadsafe(
@@ -231,11 +238,22 @@ def start_live_audio_stream(
 
         with live_streams_lock:
             entry["ended"] = True
+            delete_on_end = entry.get("delete_on_end") or not entry.get("clients")
 
         run_coroutine_threadsafe(
             resp.send(dumps({"action": "status", "message": "Live stream ended"})),
             loop,
         )
+
+        if delete_on_end and exists(file_path):
+            try:
+                remove(file_path)
+            except PermissionError:
+                logger.warning("Failed to remove live stream file: %s", file_path)
+
+        with live_streams_lock:
+            if delete_on_end:
+                live_streams.pop(media_id, None)
 
     thread = Thread(target=run, daemon=True)
     entry["thread"] = thread
@@ -270,7 +288,7 @@ async def get_live_chunk(
         if ended:
             return None
 
-        if LIVE_STREAM_READ_TIMEOUT > 0:
+        if not entry.get("buffering_done") and LIVE_STREAM_READ_TIMEOUT > 0:
             if monotonic() - start_time >= LIVE_STREAM_READ_TIMEOUT:
                 return None
 
@@ -300,7 +318,10 @@ def live_stream_cleaner(live_streams: dict, live_streams_lock: Lock):
             entry.get("stop_event").set()
             file_path = entry.get("file_path")
             if file_path and exists(file_path):
-                remove(file_path)
+                try:
+                    remove(file_path)
+                except PermissionError:
+                    logger.warning("Failed to remove live stream file: %s", file_path)
 
             with live_streams_lock:
                 live_streams.pop(media_id, None)
@@ -377,12 +398,10 @@ class Actions:
         )
         if live_info:
             live_streams, live_streams_lock = ensure_live_stream_ctx(request.app)
-            media_id = live_info.get("media_id")
-            with live_streams_lock:
-                existing = live_streams.get(media_id)
-                if existing and not existing.get("ended"):
-                    existing["last_used"] = datetime.now()
-                    return out
+            base_media_id = live_info.get("media_id")
+            media_id = f"{base_media_id}-{id(resp):x}"
+            out["id"] = media_id
+            live_info["media_id"] = media_id
 
             start_live_audio_stream(
                 live_info.get("source_url"),
@@ -391,6 +410,7 @@ class Actions:
                 loop,
                 live_streams,
                 live_streams_lock,
+                id(resp),
             )
             await resp.send(
                 dumps({"action": "status", "message": "Buffering live stream ..."})
@@ -425,6 +445,7 @@ class Actions:
                 with live_streams_lock:
                     live_entry = live_streams.get(media_id)
                     if live_entry:
+                        live_entry.setdefault("clients", set()).add(id(ws))
                         live_entry["last_used"] = datetime.now()
 
             if live_entry:
@@ -438,6 +459,18 @@ class Actions:
                 chunk = await get_live_chunk(file, chunkindex, live_entry, live_streams_lock)
                 if not chunk:
                     return {"action": "error", "message": "Live stream ended"}
+                if chunkindex == 0 and not live_entry.get("buffering_done"):
+                    live_entry["buffering_done"] = True
+                    start_time = live_entry.get("start_time", monotonic())
+                    elapsed = monotonic() - start_time
+                    await ws.send(
+                        dumps(
+                            {
+                                "action": "status",
+                                "message": f"Buffered in {elapsed:.1f}s",
+                            }
+                        )
+                    )
             else:
                 request.app.shared_ctx.data[file_name] = datetime.now()
                 chunk = await getchunk(file, chunkindex)
@@ -482,11 +515,19 @@ class Actions:
         return {"action": "error", "message": "You dare not use special Characters"}
 
     @staticmethod
-    async def handshake(*_unused):
+    async def handshake(message: dict, ws: Websocket, _request: Request):
+        client_id = f"{id(ws):x}"
+        client_version = message.get("client_version")
+        if client_version and client_version != VERSION:
+            return {
+                "action": "error",
+                "message": "Client version mismatch",
+            }
         return {
             "action": "handshake",
             "server": {"version": VERSION},
             "api": {"version": VERSION},
+            "client_id": client_id,
             "capabilities": {"video": ["32vid"], "audio": ["dfpwm"]},
         }
 
@@ -533,11 +574,25 @@ def stop_live_streams_for_client(app: Sanic, client_id: int) -> None:
     with live_streams_lock:
         entries = list(live_streams.values())
     for entry in entries:
-        if entry.get("client_id") != client_id:
+        clients = entry.get("clients") or set()
+        if client_id not in clients:
             continue
-        stop_event = entry.get("stop_event")
-        if stop_event:
-            stop_event.set()
+        clients.discard(client_id)
+        entry["clients"] = clients
+        if not clients:
+            entry["delete_on_end"] = True
+            stop_event = entry.get("stop_event")
+            if stop_event:
+                stop_event.set()
+            if entry.get("ended"):
+                file_path = entry.get("file_path")
+                if file_path and exists(file_path):
+                    try:
+                        remove(file_path)
+                    except PermissionError:
+                        logger.warning("Failed to remove live stream file: %s", file_path)
+                with live_streams_lock:
+                    live_streams.pop(entry.get("media_id"), None)
 
 actions = {}
 
@@ -552,7 +607,7 @@ DATA_CACHE_CLEANUP_AFTER = int(getenv("DATA_CACHE_CLEANUP_AFTER", "3600"))
 LIVE_STREAM_CLEANUP_INTERVAL = int(getenv("LIVE_STREAM_CLEANUP_INTERVAL", "30"))
 LIVE_STREAM_IDLE_TIMEOUT = int(getenv("LIVE_STREAM_IDLE_TIMEOUT", "300"))
 LIVE_STREAM_POLL_INTERVAL = float(getenv("LIVE_STREAM_POLL_INTERVAL", "0.25"))
-LIVE_STREAM_READ_TIMEOUT = float(getenv("LIVE_STREAM_READ_TIMEOUT", "0"))
+LIVE_STREAM_READ_TIMEOUT = float(getenv("LIVE_STREAM_READ_TIMEOUT", "60"))
 
 
 def data_cache_cleaner(data: dict):
@@ -669,10 +724,11 @@ async def stream_32vid(request: Request, id: str, width: int, height: int):
 # pylint: disable-next=invalid-name
 async def wshandler(request: Request, ws: Websocket):
     """Handels web-socket requests"""
+    client_id = f"{id(ws):x}"
     if NO_COLOR:
-        prefix = f"[{request.client_ip}] "
+        prefix = f"[{request.client_ip}-{client_id}] "
     else:
-        prefix = f"{Foreground.BLUE}[{request.client_ip}]{RESET} "
+        prefix = f"{Foreground.BLUE}[{request.client_ip}-{client_id}]{RESET} "
 
     logger.info("%sConnected!", prefix)
 
@@ -695,6 +751,11 @@ async def wshandler(request: Request, ws: Websocket):
             if message.get("action") in actions:
                 response = await actions[message.get("action")](message, ws, request)
                 await ws.send(dumps(response))
+                if (
+                    message.get("action") == "handshake"
+                    and response.get("action") == "error"
+                ):
+                    await ws.close()
     finally:
         stop_live_streams_for_client(request.app, id(ws))
         logger.info("%sDisconnected!", prefix)
