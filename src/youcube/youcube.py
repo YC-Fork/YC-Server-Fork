@@ -465,7 +465,7 @@ def main() -> None:
     Run all needed services
     """
     port = int(getenv("PORT", "5000"))
-    host = getenv("HOST", "127.0.0.1")
+    host = getenv("HOST", "0.0.0.0")
     fast = not getenv("NO_FAST")
 
     app.run(host=host, port=port, fast=fast, access_log=True)
