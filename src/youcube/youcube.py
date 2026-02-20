@@ -302,9 +302,8 @@ class CustomErrorHandler(ErrorHandler):
         if isinstance(exception, SanicException) and exception.status_code == 426:
             # TODO: Respond with nice html that tells the user how to install YC
             return text(
-                "You cannot access a YouCube server directly. "
-                "You need the YouCube client. "
-                "See https://youcube.madefor.cc/guides/client/installation/"
+                "Your YC-Server-Fork is running correctly. Now all you need is the YC-Server-Client on your CC-Tweaked computer. "
+                "See https://github.com/YC-Fork/YC-Client-Fork. "
             )
 
         return super().default(request, exception)
