@@ -7,9 +7,12 @@ Download Functionality of YC
 
 # Built-in modules
 from asyncio import run_coroutine_threadsafe
+from hashlib import sha1
 from os import getenv, listdir
 from os.path import abspath, dirname, join
 from tempfile import TemporaryDirectory
+from typing import Any, Dict, Optional, Tuple
+from urllib.parse import urlparse
 
 # Local modules
 from yc_colours import RESET, Foreground
@@ -48,6 +51,51 @@ DATA_FOLDER = join(dirname(abspath(__file__)), "data")
 FFMPEG_PATH = getenv("FFMPEG_PATH", "ffmpeg")
 SANJUUNI_PATH = getenv("SANJUUNI_PATH", "sanjuuni")
 DISABLE_OPENCL = bool(getenv("DISABLE_OPENCL"))
+DIRECT_AUDIO_EXTENSIONS = (
+    ".mp3",
+    ".aac",
+    ".m4a",
+    ".ogg",
+    ".opus",
+    ".flac",
+    ".wav",
+    ".m3u8",
+)
+
+
+def is_direct_audio_stream_url(url: str) -> bool:
+    """Returns True if the URL points to a direct audio stream."""
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        return False
+    path = (parsed.path or "").lower()
+    return any(path.endswith(ext) for ext in DIRECT_AUDIO_EXTENSIONS)
+
+
+def live_stream_id_from_url(url: str) -> str:
+    """Creates a safe ID for direct stream URLs."""
+    return f"live-{sha1(url.encode('utf-8')).hexdigest()[:16]}"
+
+
+def pick_audio_url(info: dict) -> Optional[str]:
+    """Selects a direct audio URL from a yt-dlp info dict."""
+    if info.get("url"):
+        return info.get("url")
+
+    formats = info.get("formats") or []
+    audio_formats = [
+        fmt
+        for fmt in formats
+        if fmt.get("acodec") != "none" and fmt.get("vcodec") == "none"
+    ]
+    if not audio_formats:
+        audio_formats = [fmt for fmt in formats if fmt.get("acodec") != "none"]
+    if not audio_formats:
+        return None
+    audio_formats.sort(
+        key=lambda fmt: (fmt.get("abr") or 0, fmt.get("tbr") or 0), reverse=True
+    )
+    return audio_formats[0].get("url")
 
 
 def download_video(
@@ -148,7 +196,7 @@ def download(
     width: int,
     height: int,
     spotify_url_processor: SpotifyURLProcessor,
-) -> (dict[str, any], list):
+) -> Tuple[Dict[str, Any], list, Optional[Dict]]:
     """
     Downloads and converts the media from the give URL
     """
@@ -158,6 +206,25 @@ def download(
     # cap height and width
     if width and height:
         width, height = cap_width_and_height(width, height)
+
+    if is_direct_audio_stream_url(url):
+        if is_video:
+            return (
+                {"action": "error", "message": "Livestream video is not supported"},
+                [],
+                None,
+            )
+        media_id = live_stream_id_from_url(url)
+        create_data_folder_if_not_present()
+        out = {
+            "action": "media",
+            "id": media_id,
+            "title": url,
+            "like_count": None,
+            "view_count": None,
+            "is_live": True,
+        }
+        return out, [get_audio_name(media_id)], {"source_url": url, "media_id": media_id}
 
     def my_hook(info):
         """https://github.com/yt-dlp/yt-dlp#adding-logger-and-progress-hook"""
@@ -281,8 +348,36 @@ def download(
 
         media_id = data.get("id")
 
-        if data.get("is_live"):
-            return {"action": "error", "message": "Livestreams are not supported"}
+        if data.get("is_live") or data.get("live_status") == "is_live":
+            if is_video:
+                return (
+                    {"action": "error", "message": "Livestream video is not supported"},
+                    [],
+                    None,
+                )
+            audio_url = pick_audio_url(data)
+            if not audio_url:
+                return (
+                    {
+                        "action": "error",
+                        "message": "Could not resolve livestream audio URL",
+                    },
+                    [],
+                    None,
+                )
+            out = {
+                "action": "media",
+                "id": media_id,
+                "title": data.get("title"),
+                "like_count": data.get("like_count"),
+                "view_count": data.get("view_count"),
+                "is_live": True,
+            }
+            return (
+                out,
+                [get_audio_name(media_id)],
+                {"source_url": audio_url, "media_id": media_id},
+            )
 
         create_data_folder_if_not_present()
 
@@ -331,4 +426,4 @@ def download(
     if is_video:
         files.append(get_video_name(media_id, width, height))
 
-    return out, files
+    return out, files, None
