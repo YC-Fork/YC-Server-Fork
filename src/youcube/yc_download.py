@@ -161,15 +161,45 @@ def download(
 
     def my_hook(info):
         """https://github.com/yt-dlp/yt-dlp#adding-logger-and-progress-hook"""
-        if info.get("status") == "downloading":
+        status = info.get("status")
+        if status in ("waiting", "paused"):
+            run_coroutine_threadsafe(
+                resp.send(
+                    dumps(
+                        {
+                            "action": "status",
+                            "message": "Waiting on YouTube ...",
+                        }
+                    )
+                ),
+                loop,
+            )
+            return
+
+        if status == "downloading":
+            percent = info.get("_percent_str")
+            eta = info.get("_eta_str")
+            if not percent or not eta:
+                run_coroutine_threadsafe(
+                    resp.send(
+                        dumps(
+                            {
+                                "action": "status",
+                                "message": "Waiting on YouTube ...",
+                            }
+                        )
+                    ),
+                    loop,
+                )
+                return
+
             run_coroutine_threadsafe(
                 resp.send(
                     dumps(
                         {
                             "action": "status",
                             "message": remove_ansi_escape_codes(
-                                f"download {remove_whitespace(info.get('_percent_str'))} "
-                                f"ETA {info.get('_eta_str')}"
+                                f"download {remove_whitespace(percent)} " f"ETA {eta}"
                             ),
                         }
                     )
@@ -180,13 +210,22 @@ def download(
     # FIXME: Cleanup on Exception
     with TemporaryDirectory(prefix="youcube-") as temp_dir:
         yt_dl_options = {
-            "format": "worst[ext=mp4]/worst" if is_video else "worstaudio/worst",
+            "format": "bestaudio/best",
             "outtmpl": join(temp_dir, "%(id)s.%(ext)s"),
             "default_search": "auto",
             "restrictfilenames": True,
             "extract_flat": "in_playlist",
             "progress_hooks": [my_hook],
             "logger": YTDLPLogger(),
+            "cookiefile": "/path/to/your/cookie.txt",
+            "js_runtimes": {
+                "node": {"path": "/path/to/your/node/bin"}
+            },
+            "extractor_args": {
+                "youtube": {
+                    "player_client": ["web"]
+                }
+            }
         }
 
         yt_dl = YoutubeDL(yt_dl_options)
