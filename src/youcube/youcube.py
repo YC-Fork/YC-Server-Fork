@@ -56,8 +56,7 @@ from yc_utils import (
     is_save,
 )
 
-VERSION = "0.0.0-poc.1.0.2"
-API_VERSION = "0.0.0-poc.1.0.0"  # https://commandcracker.github.io/YouCube/
+VERSION = "0.1.0"  # https://commandcracker.github.io/YouCube/
 
 # one dfpwm chunk is 16 bits
 CHUNK_SIZE = 16
@@ -487,7 +486,7 @@ class Actions:
         return {
             "action": "handshake",
             "server": {"version": VERSION},
-            "api": {"version": API_VERSION},
+            "api": {"version": VERSION},
             "capabilities": {"video": ["32vid"], "audio": ["dfpwm"]},
         }
 
