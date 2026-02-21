@@ -6,7 +6,7 @@ Black Magic with threads, asyncio and subprocesses
 """
 
 # Built-in modules
-from asyncio import Event
+from asyncio import AbstractEventLoop, Event, get_running_loop
 from subprocess import PIPE, Popen
 from sys import settrace
 from threading import Thread
@@ -19,17 +19,27 @@ class ThreadSaveAsyncioEventWithReturnValue(Event):
     Thread-save version of asyncio.Event with result / Return value
     """
 
-    def __init__(self) -> None:
+    def __init__(self, loop: AbstractEventLoop | None = None) -> None:
         super().__init__()
         self.result = None
+        if loop is not None:
+            self._threadsafe_loop = loop
+        else:
+            try:
+                self._threadsafe_loop = get_running_loop()
+            except RuntimeError:
+                # Allow creation outside an active event loop; set() will fallback.
+                self._threadsafe_loop = None
 
     # pylint: disable-next=fixme
     # TODO: clear() method
 
     def set(self):
-        # pylint: disable-next=fixme
-        # FIXME: The _loop attribute is not documented as public api!
-        self._loop.call_soon_threadsafe(super().set)
+        loop = self._threadsafe_loop
+        if loop is None or loop.is_closed():
+            super().set()
+            return
+        loop.call_soon_threadsafe(super().set)
 
 
 def run_with_thread_save_asyncio_event_with_return_value(
@@ -50,7 +60,8 @@ async def run_function_in_thread_from_async_function(
     """
     Runs a function in a thread from an async function
     """
-    event = ThreadSaveAsyncioEventWithReturnValue()
+    loop = get_running_loop()
+    event = ThreadSaveAsyncioEventWithReturnValue(loop)
     Thread(
         target=run_with_thread_save_asyncio_event_with_return_value,
         args=(event, func, *args),

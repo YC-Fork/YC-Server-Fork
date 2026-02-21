@@ -6,7 +6,8 @@ Runs the main function
 """
 
 # Built-in modules
-from youcube import main
+from pathlib import Path
+import runpy
 
 if __name__ == "__main__":
-    main()
+    runpy.run_path(str(Path(__file__).with_name("ycf-server.py")), run_name="__main__")

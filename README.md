@@ -3,6 +3,10 @@ I have it currently working, over the next few days(14-feb-2026) ill update the 
 
 Update (20 feb): Ill have a full getting started on here soon, server seems stable so later this weekend i will push those changes. 
 
+## Getting started
+
+After installing the requirements, just run src/ycf-server.py and the server will boot. 
+
 ## Requirements
 
 - [yt-dlp/FFmpeg] / [FFmpeg 5.1+]

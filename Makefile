@@ -1,7 +1,7 @@
 #!make
 
 run:
-	python src/youcube/youcube.py
+	python src/youcube/ycf-server.py
 
 docker-build:
 	docker build -t youcube:latest src/.
