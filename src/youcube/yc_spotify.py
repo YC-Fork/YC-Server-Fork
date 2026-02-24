@@ -11,7 +11,7 @@ from enum import Enum
 from logging import getLogger
 from os import getenv
 from re import match as re_match
-from typing import Union
+from typing import Optional, Union
 
 # pip modules
 from spotipy import MemoryCacheHandler, SpotifyClientCredentials
@@ -131,8 +131,26 @@ def main() -> None:
     logger = getLogger(__name__)
 
     # Spotify
-    spotify_client_id = getenv("SPOTIPY_CLIENT_ID")
-    spotify_client_secret = getenv("SPOTIPY_CLIENT_SECRET")
+    config = load_config()
+    spotify_config = config.get("spotify") if isinstance(config.get("spotify"), dict) else {}
+
+    def resolve_config_value(value, env_key: str) -> Optional[str]:
+        if value is None:
+            return getenv(env_key)
+        if isinstance(value, str) and not value.strip():
+            return getenv(env_key)
+        return value
+
+    spotify_client_id = resolve_config_value(
+        spotify_config.get("client_id"), "SPOTIPY_CLIENT_ID"
+    )
+    spotify_client_secret = resolve_config_value(
+        spotify_config.get("client_secret"), "SPOTIPY_CLIENT_SECRET"
+    )
+    spotify_market = spotify_config.get("market") if spotify_config else None
+    if isinstance(spotify_market, str) and not spotify_market.strip():
+        spotify_market = None
+    spotify_market = spotify_market or "NL"
     spotipy = None
 
     if spotify_client_id and spotify_client_secret:
@@ -146,7 +164,7 @@ def main() -> None:
         )
     else:
         logger.info("Spotipy Disabled")
-    spotify_url_processor = SpotifyURLProcessor(spotipy)
+    spotify_url_processor = SpotifyURLProcessor(spotipy, spotify_market=spotify_market)
 
     test_urls = [
         "https://open.spotify.com/album/2Kh43m04B1UkVcpcRa1Zug",
@@ -168,3 +186,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+from yc_utils import load_config

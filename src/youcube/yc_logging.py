@@ -89,11 +89,13 @@ def setup_logging() -> Logger:
 
     # noinspection SpellCheckingInspection
     if NO_COLOR:
-        formatter = Formatter(fmt="[%(asctime)s %(levelname)s] [YouCube] %(message)s")
+        formatter = Formatter(
+            fmt="[%(asctime)s %(levelname)s] [YC-Fork-Server] %(message)s"
+        )
     else:
         formatter = ColordFormatter(
             # pylint: disable-next=line-too-long
-            fmt=f"[%(asctime)s %(levelname)s] {Foreground.BRIGHT_WHITE}[You{Foreground.RED}Cube]{RESET} %(message)s"
+            fmt=f"[%(asctime)s %(levelname)s] {Foreground.BRIGHT_WHITE}[YC-Fork-Server]{RESET} %(message)s"
         )
 
     logging_handler = StreamHandler()

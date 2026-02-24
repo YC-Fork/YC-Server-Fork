@@ -83,4 +83,4 @@ USER 1000:1000
 
 COPY --from=builder /youcube/__pycache__ /opt/server
 
-ENTRYPOINT ["python3", "youcube.pyc"]
+ENTRYPOINT ["python3", "ycf-server.pyc"]

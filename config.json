@@ -1,0 +1,13 @@
+{
+  "cookie_file": "/path/to/cookies.txt",
+  "js_runtimes": {
+    "node": {
+      "path": "/path/to/node"
+    }
+  },
+  "spotify": {
+    "client_id": null,
+    "client_secret": null,
+    "market": "NL"
+  }
+}

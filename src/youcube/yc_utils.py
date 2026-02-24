@@ -6,6 +6,9 @@ Utils for string manipulation, data management etc.
 """
 
 # Built-in modules
+import json
+from json import JSONDecodeError
+from logging import getLogger
 from os import mkdir
 from os.path import abspath, dirname, exists, join
 from re import RegexFlag
@@ -63,6 +66,8 @@ def cap_width_and_height(width: int, height: int) -> Tuple[int, int]:
 VIDEO_FORMAT = "32vid"
 AUDIO_FORMAT = "dfpwm"
 DATA_FOLDER = join(dirname(abspath(__file__)), "data")
+ROOT_DIR = dirname(dirname(dirname(abspath(__file__))))
+CONFIG_PATH = join(ROOT_DIR, "config.json")
 
 
 def get_video_name(media_id: str, width: int, height: int) -> str:
@@ -108,3 +113,20 @@ allowed_characters = re_compile("^[a-zA-Z0-9-._]*$")
 def is_save(string: str) -> bool:
     """Returns True if the given string does not contain special characters"""
     return bool(allowed_characters.match(string))
+
+
+def load_config() -> dict:
+    """Loads optional config.json settings."""
+    logger = getLogger(__name__)
+    if not exists(CONFIG_PATH):
+        return {}
+    try:
+        with open(CONFIG_PATH, "r", encoding="utf-8") as file:
+            data = json.load(file)
+    except (OSError, JSONDecodeError) as exc:
+        logger.warning("Failed to read config.json: %s", exc)
+        return {}
+    if not isinstance(data, dict):
+        logger.warning("config.json must be a JSON object")
+        return {}
+    return data

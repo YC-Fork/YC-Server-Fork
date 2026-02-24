@@ -63,4 +63,4 @@ ENV \
 
 USER 1000:1000
 
-ENTRYPOINT ["python3", "youcube.py"]
+ENTRYPOINT ["python3", "ycf-server.py"]
