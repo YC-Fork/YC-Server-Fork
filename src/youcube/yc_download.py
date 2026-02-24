@@ -41,6 +41,7 @@ except ModuleNotFoundError:
 # pip modules
 from sanic import Websocket
 from yt_dlp import YoutubeDL
+from yt_dlp.utils import DownloadError
 
 # pylint settings
 # pylint: disable=pointless-string-statement
@@ -465,7 +466,14 @@ def download(
                 else:
                     url = processed_url
 
-        data = yt_dl.extract_info(url, download=False)
+        try:
+            data = yt_dl.extract_info(url, download=False)
+        except DownloadError as e:
+            return (
+                {"action": "error", "message": str(e)},
+                [],
+                None,
+            )
 
         if data.get("extractor") == "generic":
             data["id"] = "g" + data.get("webpage_url_domain") + data.get("id")
@@ -497,7 +505,14 @@ def download(
         if data.get("extractor") == "youtube" and (
                 data.get("view_count") is None or data.get("like_count") is None
         ):
-            data = yt_dl.extract_info(data.get("id"), download=False)
+            try:
+                data = yt_dl.extract_info(data.get("id"), download=False)
+            except DownloadError as e:
+                return (
+                    {"action": "error", "message": str(e)},
+                    [],
+                    None,
+                )
 
         if not is_video and is_direct_audio_stream_info(data):
             audio_url = pick_audio_url(data) or url
@@ -581,7 +596,14 @@ def download(
                 loop,
             )
 
-            yt_dl.process_ie_result(data, download=True)
+            try:
+                yt_dl.process_ie_result(data, download=True)
+            except DownloadError as e:
+                return (
+                    {"action": "error", "message": str(e)},
+                    [],
+                    None,
+                )
 
         # TODO: Thread audio & video download
 
