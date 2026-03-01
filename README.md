@@ -1,27 +1,51 @@
 # Youcube server Fork
-I have it currently working, over the next few days(14-feb-2026) ill update the git repo (this one) to a working version.
+This is a fork of the original Youcube server. This is an continuation of the original project since i really liked being able to play music, videos etc in minecraft.
+This fork has lots of new features and is a lot more stable.
 
-Update (20 feb): Ill have a full getting started on here soon, server seems stable so later this weekend i will push those changes. 
+### Features that were in the original project
+- Music playing from multiple sources but not live. 
+- Video+Audio playing from multiple sources. 
 
-## Getting started
-
-After installing the requirements, just run src/ycf-server.py and the server will boot. 
+### Additional Features
+- Radio stations support, live streams support from youtube, twitch, etc. 
+- Server-sided command system for more control.
+- Lots and lots of bug fixes.
 
 ## Requirements
 
-- [yt-dlp/FFmpeg] / [FFmpeg 5.1+]
-- [yt-dlp-ejs] `(For current YT api there are JS challenge to solve, you also gonna need Node.js as resolver)`
+- FFmpeg / FFmpeg 5.1+
 - Node.js
-- [Python 3.7+]
-  - [sanic]
-  - [yt-dlp]
-  - [spotipy]
+- sanjuuni (Optional for video output)
+- Python 3.7+
+  - sanic
+  - yt-dlp
+  - spotipy
+  - yt-dlp-ejs
 
-If you have `pip` installed you can install the requirements with the following command: 
+If you have `pip` installed the python requirements are installed by following the instructions below. 
+Ffmpeg and node.js are required, so install them first. There is a script for Debian/Ubuntu in `scripts/install_sanjuuni_debian.sh`.
 
-```shell
-pip install -r src/requirements.txt
-```
+## Getting started
+
+1. Clone the project into a folder you want:
+
+   ```shell
+   git clone https://github.com/YC-Fork/YC-Server-Fork
+   ```
+
+2. Install Python requirements:
+
+   ```shell
+   pip install -r src/requirements.txt
+   ```
+
+3. Install Node.js (required for some yt-dlp JS challenges if you use YouTube).
+4. Adjust values in `config.json` in the project root.
+5. Run the server:
+
+   ```shell
+   python src/youcube/ycf-server.py
+   ```
 
 ## Configuration
 
