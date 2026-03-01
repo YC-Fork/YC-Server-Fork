@@ -143,6 +143,13 @@ def pick_video_url(info: dict) -> Optional[str]:
     return video_formats[0].get("url")
 
 
+def has_video_stream(info: dict) -> bool:
+    """Returns True if yt-dlp info contains a video stream."""
+    if info.get("vcodec") and info.get("vcodec") != "none":
+        return True
+    return pick_video_url(info) is not None
+
+
 def download_video(
         temp_dir: str, media_id: str, resp: Websocket, loop, width: int, height: int
 ):
@@ -331,26 +338,26 @@ def download(
     if width and height:
         width, height = cap_width_and_height(width, height)
 
-    direct_stream_url = None
     if is_direct_audio_stream_url(url):
-        if is_video:
-            direct_stream_url = url
-        else:
-            media_id = live_stream_id_from_url(url)
-            create_data_folder_if_not_present()
-            out = {
-                "action": "media",
-                "id": media_id,
-                "title": url,
-                "like_count": None,
-                "view_count": None,
-                "is_live": True,
-            }
-            return (
-                out,
-                [get_audio_name(media_id)],
-                {"source_url": url, "media_id": media_id},
-            )
+        # Direct audio streams should always fall back to audio-only output.
+        is_video = False
+        width = None
+        height = None
+        media_id = live_stream_id_from_url(url)
+        create_data_folder_if_not_present()
+        out = {
+            "action": "media",
+            "id": media_id,
+            "title": url,
+            "like_count": None,
+            "view_count": None,
+            "is_live": True,
+        }
+        return (
+            out,
+            [get_audio_name(media_id)],
+            {"source_url": url, "media_id": media_id},
+        )
 
     def my_hook(info):
         """https://github.com/yt-dlp/yt-dlp#adding-logger-and-progress-hook"""
@@ -402,23 +409,6 @@ def download(
 
     # FIXME: Cleanup on Exception
     with TemporaryDirectory(prefix="youcube-") as temp_dir:
-        if direct_stream_url and is_video:
-            media_id = live_stream_id_from_url(direct_stream_url)
-            create_data_folder_if_not_present()
-            out = {
-                "action": "media",
-                "id": media_id,
-                "title": direct_stream_url,
-                "like_count": None,
-                "view_count": None,
-                "is_live": True,
-            }
-            return (
-                out,
-                [get_audio_name(media_id)],
-                {"audio_url": direct_stream_url, "media_id": media_id},
-            )
-
         config = load_config()
         cookie_file = config.get("cookie_file")
         js_runtimes = config.get("js_runtimes")
@@ -514,6 +504,23 @@ def download(
                     None,
                 )
 
+        if is_video and not has_video_stream(data):
+            is_video = False
+            width = None
+            height = None
+            yt_dl.params["format"] = "bestaudio/best"
+            run_coroutine_threadsafe(
+                resp.send(
+                    dumps(
+                        {
+                            "action": "status",
+                            "message": "Video not available, falling back to audio.",
+                        }
+                    )
+                ),
+                loop,
+            )
+
         if not is_video and is_direct_audio_stream_info(data):
             audio_url = pick_audio_url(data) or url
             media_id = live_stream_id_from_url(audio_url)
@@ -586,7 +593,9 @@ def download(
         create_data_folder_if_not_present()
 
         audio_downloaded = is_audio_already_downloaded(media_id)
-        video_downloaded = is_video_already_downloaded(media_id, width, height)
+        video_downloaded = (
+            is_video_already_downloaded(media_id, width, height) if is_video else True
+        )
 
         if not audio_downloaded or (not video_downloaded and is_video):
             run_coroutine_threadsafe(

@@ -14,6 +14,8 @@ from os import getenv, remove
 from os.path import exists, getsize, join
 from shutil import which
 from subprocess import DEVNULL, Popen
+import sys
+import logging
 from threading import Event, Lock, Thread
 from time import monotonic, sleep
 from typing import Any, List, Optional, Tuple, Type, Union
@@ -55,6 +57,7 @@ from yc_utils import (
     get_video_name,
     is_save,
     load_config,
+    VIDEO_FORMAT,
 )
 
 VERSION = "0.1.1"  # https://commandcracker.github.io/YouCube/
@@ -446,10 +449,24 @@ class Actions:
         )
         if live_info:
             live_streams, live_streams_lock = ensure_live_stream_ctx(request.app)
+            client_state = get_shared_client_state(request.app)
             base_media_id = live_info.get("media_id")
             media_id = f"{base_media_id}-{id(resp):x}"
             out["id"] = media_id
             live_info["media_id"] = media_id
+            if client_state is not None:
+                client_id = f"{id(resp):x}"
+                state = client_state.get(client_id) or {}
+                state.update(
+                    {
+                        "mode": "audio",
+                        "media_id": media_id,
+                        "title": out.get("title"),
+                        "is_live": True,
+                        "url": url,
+                    }
+                )
+                client_state[client_id] = state
 
             audio_url = live_info.get("audio_url") or live_info.get("source_url")
             if audio_url:
@@ -468,6 +485,23 @@ class Actions:
 
         for file in files:
             request.app.shared_ctx.data[file] = datetime.now()
+        client_state = get_shared_client_state(request.app)
+        has_video_file = any(
+            file.lower().endswith(f".{VIDEO_FORMAT}") for file in files
+        )
+        if client_state is not None:
+            client_id = f"{id(resp):x}"
+            state = client_state.get(client_id) or {}
+            state.update(
+                {
+                    "mode": "audio+video" if has_video_file else "audio",
+                    "media_id": out.get("id"),
+                    "title": out.get("title"),
+                    "is_live": False,
+                    "url": url,
+                }
+            )
+            client_state[client_id] = state
         return out
 
     @staticmethod
@@ -633,6 +667,184 @@ def ensure_live_stream_ctx(app: Sanic) -> Tuple[dict, Lock]:
     return app.ctx.live_streams, app.ctx.live_streams_lock
 
 
+def ensure_ws_ctx(app: Sanic) -> Tuple[set, Lock]:
+    """Ensure websocket tracking exists for the current process."""
+    if not hasattr(app.ctx, "active_websockets"):
+        app.ctx.active_websockets = set()
+    if not hasattr(app.ctx, "active_websockets_lock"):
+        app.ctx.active_websockets_lock = Lock()
+    return app.ctx.active_websockets, app.ctx.active_websockets_lock
+
+
+def get_shared_client_state(app: Sanic):
+    """Returns shared client state map (main process creates it)."""
+    if not hasattr(app.shared_ctx, "client_state"):
+        return None
+    return app.shared_ctx.client_state
+
+
+def get_shared_kick_generation(app: Sanic):
+    """Returns shared kick generation value (main process creates it)."""
+    if not hasattr(app.shared_ctx, "kick_generation"):
+        return None
+    return app.shared_ctx.kick_generation
+
+
+def get_shared_debug_enabled(app: Sanic):
+    """Returns shared debug enabled flag (main process creates it)."""
+    if not hasattr(app.shared_ctx, "debug_enabled"):
+        return None
+    return app.shared_ctx.debug_enabled
+
+
+def command_status(app: Sanic) -> None:
+    client_state = get_shared_client_state(app)
+    if client_state is None:
+        logger.info("Status: unavailable (shared state not ready)")
+        return
+    items = list(client_state.values())
+    ws_count = len(items)
+    live_count = sum(1 for item in items if item.get("is_live"))
+    logger.info("Status: %s active connections, %s live streams", ws_count, live_count)
+
+
+def command_kick_all(app: Sanic) -> None:
+    kick_generation = get_shared_kick_generation(app)
+    if kick_generation is None:
+        logger.warning("Kick-all failed: shared state not ready")
+        return
+    kick_generation.value += 1
+    current = kick_generation.value
+    logger.info("Kick-all issued (generation %s)", current)
+
+
+def command_list_all(app: Sanic) -> None:
+    client_state = get_shared_client_state(app)
+    if client_state is None:
+        logger.info("Clients: unavailable (shared state not ready)")
+        return
+    items = list(client_state.items())
+    if not items:
+        logger.info("Clients: none")
+        return
+    logger.info("Clients:")
+    for client_id, state in items:
+        media_id = state.get("media_id") or "-"
+        mode = state.get("mode") or "unknown"
+        title = state.get("title") or "-"
+        ip = state.get("ip") or "-"
+        url = state.get("url") or "-"
+        logger.info(
+            "  %s | %s | %s | %s | %s | %s", client_id, ip, mode, media_id, title, url
+        )
+
+
+def kick_watcher(app: Sanic) -> None:
+    kick_generation = get_shared_kick_generation(app)
+    if kick_generation is None:
+        return
+    last_seen = kick_generation.value
+    while True:
+        sleep(0.5)
+        current = kick_generation.value
+        if current == last_seen:
+            continue
+        last_seen = current
+        active_websockets, active_websockets_lock = ensure_ws_ctx(app)
+        loop = getattr(app.ctx, "main_loop", None)
+        if loop is None:
+            continue
+        with active_websockets_lock:
+            sockets = list(active_websockets)
+        for ws in sockets:
+            try:
+                run_coroutine_threadsafe(
+                    ws.close(code=1000, reason="Server kick-all"), loop
+                )
+            except RuntimeError:
+                logger.warning("Failed to kick websocket: loop not running")
+
+
+def debug_watcher(app: Sanic) -> None:
+    debug_enabled = get_shared_debug_enabled(app)
+    if debug_enabled is None:
+        return
+    last_seen = debug_enabled.value
+    while True:
+        sleep(0.5)
+        current = debug_enabled.value
+        if current == last_seen:
+            continue
+        last_seen = current
+        level = logging.DEBUG if current else logging.INFO
+        logger.setLevel(level)
+        for handler in logger.handlers:
+            handler.setLevel(level)
+
+
+def command_listener(app: Sanic) -> None:
+    commands = {
+        "status": command_status,
+        "kick-all": command_kick_all,
+        "kickall": command_kick_all,
+        "list-all": command_list_all,
+        "listall": command_list_all,
+        "help": None,
+    }
+    logger.info("Command listener ready: status, kick-all, list-all, debug, help")
+    while True:
+        try:
+            line = sys.stdin.readline()
+        except Exception:
+            break
+        if line == "":
+            break
+        cmd = line.strip().lower()
+        if not cmd:
+            continue
+        if cmd == "help":
+            logger.info("Commands: status, kick-all, list-all, debug, help")
+            continue
+        if cmd.startswith("debug"):
+            parts = cmd.split()
+            if len(parts) == 1:
+                debug_enabled = get_shared_debug_enabled(app)
+                if debug_enabled is None:
+                    logger.info(
+                        "Debug is %s", "on" if logger.level <= logging.DEBUG else "off"
+                    )
+                else:
+                    logger.info(
+                        "Debug is %s", "on" if debug_enabled.value else "off"
+                    )
+                continue
+            if parts[1] in ("on", "true", "1"):
+                debug_enabled = get_shared_debug_enabled(app)
+                if debug_enabled is not None:
+                    debug_enabled.value = 1
+                logger.setLevel(logging.DEBUG)
+                for handler in logger.handlers:
+                    handler.setLevel(logging.DEBUG)
+                logger.info("Debug logging enabled")
+                continue
+            if parts[1] in ("off", "false", "0"):
+                debug_enabled = get_shared_debug_enabled(app)
+                if debug_enabled is not None:
+                    debug_enabled.value = 0
+                logger.setLevel(logging.INFO)
+                for handler in logger.handlers:
+                    handler.setLevel(logging.INFO)
+                logger.info("Debug logging disabled")
+                continue
+            logger.info("Usage: debug on|off")
+            continue
+        handler = commands.get(cmd)
+        if handler is None:
+            logger.info("Unknown command: %s", cmd)
+            continue
+        handler(app)
+
+
 def stop_live_streams_for_client(app: Sanic, client_id: int) -> None:
     """Stops live streams that belong to a disconnected client."""
     live_streams, live_streams_lock = ensure_live_stream_ctx(app)
@@ -712,7 +924,13 @@ async def ready(app: Sanic, _):
 @app.main_process_start
 async def main_start(app: Sanic):
     """See https://sanic.dev/en/guide/basics/listeners.html"""
-    app.shared_ctx.data = Manager().dict()
+    manager = Manager()
+    app.shared_ctx.data = manager.dict()
+    app.shared_ctx.client_state = manager.dict()
+    app.shared_ctx.kick_generation = manager.Value("i", 0)
+    config = load_config()
+    debug_default = bool(config.get("debug_logging_default", False))
+    app.shared_ctx.debug_enabled = manager.Value("i", 1 if debug_default else 0)
     ensure_live_stream_ctx(app)
 
     if which(FFMPEG_PATH) is None:
@@ -725,6 +943,23 @@ async def main_start(app: Sanic):
         logger.info("Spotipy Enabled")
     else:
         logger.info("Spotipy Disabled")
+
+    if not sys.stdin.closed:
+        Thread(target=command_listener, args=(app,), daemon=True).start()
+
+
+@app.before_server_start
+async def before_start(app: Sanic, _):
+    ensure_ws_ctx(app)
+    app.ctx.main_loop = get_event_loop()
+    debug_enabled = get_shared_debug_enabled(app)
+    if debug_enabled is not None:
+        level = logging.DEBUG if debug_enabled.value else logging.INFO
+        logger.setLevel(level)
+        for handler in logger.handlers:
+            handler.setLevel(level)
+    Thread(target=kick_watcher, args=(app,), daemon=True).start()
+    Thread(target=debug_watcher, args=(app,), daemon=True).start()
 
 
 @app.route("/dfpwm/<media_id:str>/<chunkindex:int>")
@@ -799,6 +1034,19 @@ async def wshandler(request: Request, ws: Websocket):
 
     logger.debug("%sMy headers are: %s", prefix, request.headers)
 
+    active_websockets, active_websockets_lock = ensure_ws_ctx(request.app)
+    client_state = get_shared_client_state(request.app)
+    with active_websockets_lock:
+        active_websockets.add(ws)
+    if client_state is not None:
+        client_state[client_id] = {
+            "mode": "idle",
+            "media_id": None,
+            "title": None,
+            "is_live": False,
+            "ip": request.client_ip,
+        }
+
     try:
         while True:
             message = await ws.recv()
@@ -822,6 +1070,10 @@ async def wshandler(request: Request, ws: Websocket):
                 ):
                     await ws.close()
     finally:
+        with active_websockets_lock:
+            active_websockets.discard(ws)
+        if client_state is not None:
+            client_state.pop(client_id, None)
         stop_live_streams_for_client(request.app, id(ws))
         logger.info("%sDisconnected!", prefix)
 

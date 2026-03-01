@@ -99,6 +99,7 @@ def setup_logging() -> Logger:
         )
 
     logging_handler = StreamHandler()
+    logging_handler.setLevel(LOGLEVEL)
     logging_handler.setFormatter(formatter)
     logger.addHandler(logging_handler)
 

@@ -9,5 +9,6 @@
     "client_id": null,
     "client_secret": null,
     "market": "NL"
-  }
+  },
+  "debug_logging_default": false
 }
