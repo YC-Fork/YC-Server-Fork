@@ -1031,7 +1031,7 @@ async def main_start(app: Sanic):
 
 
 @app.before_server_start
-async def before_start(app: Sanic, _):
+async def before_start(app: Sanic):
     ensure_ws_ctx(app)
     ensure_ws_map_ctx(app)
     app.ctx.main_loop = get_event_loop()
