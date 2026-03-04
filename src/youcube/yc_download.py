@@ -100,6 +100,31 @@ def live_stream_id_from_url(url: str) -> str:
     return f"live-{sha1(url.encode('utf-8')).hexdigest()[:16]}"
 
 
+def is_legacy_ssl_handshake_error(err: Exception) -> bool:
+    """Detects SSL handshake errors that suggest legacy-server-connect."""
+    message = str(err).upper()
+    return "SSLV3_ALERT_HANDSHAKE_FAILURE" in message or "LEGACY-SERVER-CONNECT" in message
+
+
+def build_direct_audio_response(url: str, title: Optional[str] = None):
+    """Builds a response tuple for direct audio streams."""
+    media_id = live_stream_id_from_url(url)
+    create_data_folder_if_not_present()
+    out = {
+        "action": "media",
+        "id": media_id,
+        "title": title or url,
+        "like_count": None,
+        "view_count": None,
+        "is_live": True,
+    }
+    return (
+        out,
+        [get_audio_name(media_id)],
+        {"source_url": url, "media_id": media_id},
+    )
+
+
 def pick_audio_url(info: dict) -> Optional[str]:
     """Selects a direct audio URL from a yt-dlp info dict."""
     if info.get("url"):
@@ -343,21 +368,7 @@ def download(
         is_video = False
         width = None
         height = None
-        media_id = live_stream_id_from_url(url)
-        create_data_folder_if_not_present()
-        out = {
-            "action": "media",
-            "id": media_id,
-            "title": url,
-            "like_count": None,
-            "view_count": None,
-            "is_live": True,
-        }
-        return (
-            out,
-            [get_audio_name(media_id)],
-            {"source_url": url, "media_id": media_id},
-        )
+        return build_direct_audio_response(url)
 
     def my_hook(info):
         """https://github.com/yt-dlp/yt-dlp#adding-logger-and-progress-hook"""
@@ -458,7 +469,15 @@ def download(
 
         try:
             data = yt_dl.extract_info(url, download=False)
-        except DownloadError as e:
+        except Exception as e:
+            if (
+                    is_legacy_ssl_handshake_error(e)
+                    and urlparse(url).scheme in ("http", "https")
+            ):
+                is_video = False
+                width = None
+                height = None
+                return build_direct_audio_response(url)
             return (
                 {"action": "error", "message": str(e)},
                 [],

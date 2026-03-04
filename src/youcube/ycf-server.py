@@ -10,7 +10,7 @@ from asyncio import get_event_loop, run_coroutine_threadsafe, sleep as async_sle
 from base64 import b64encode
 from datetime import datetime
 from multiprocessing import Manager
-from os import getenv, remove
+from os import getenv, remove, system
 from os.path import exists, getsize, join
 from shutil import which
 from subprocess import DEVNULL, Popen
@@ -464,6 +464,7 @@ class Actions:
                         "title": out.get("title"),
                         "is_live": True,
                         "url": url,
+                        "listening_since": monotonic(),
                     }
                 )
                 client_state[client_id] = state
@@ -499,6 +500,7 @@ class Actions:
                     "title": out.get("title"),
                     "is_live": False,
                     "url": url,
+                    "listening_since": monotonic(),
                 }
             )
             client_state[client_id] = state
@@ -676,6 +678,15 @@ def ensure_ws_ctx(app: Sanic) -> Tuple[set, Lock]:
     return app.ctx.active_websockets, app.ctx.active_websockets_lock
 
 
+def ensure_ws_map_ctx(app: Sanic) -> Tuple[dict, Lock]:
+    """Ensure websocket id map exists for the current process."""
+    if not hasattr(app.ctx, "ws_by_id"):
+        app.ctx.ws_by_id = {}
+    if not hasattr(app.ctx, "ws_by_id_lock"):
+        app.ctx.ws_by_id_lock = Lock()
+    return app.ctx.ws_by_id, app.ctx.ws_by_id_lock
+
+
 def get_shared_client_state(app: Sanic):
     """Returns shared client state map (main process creates it)."""
     if not hasattr(app.shared_ctx, "client_state"):
@@ -688,6 +699,13 @@ def get_shared_kick_generation(app: Sanic):
     if not hasattr(app.shared_ctx, "kick_generation"):
         return None
     return app.shared_ctx.kick_generation
+
+
+def get_shared_kick_targets(app: Sanic):
+    """Returns shared kick targets map (main process creates it)."""
+    if not hasattr(app.shared_ctx, "kick_targets"):
+        return None
+    return app.shared_ctx.kick_targets
 
 
 def get_shared_debug_enabled(app: Sanic):
@@ -734,8 +752,19 @@ def command_list_all(app: Sanic) -> None:
         title = state.get("title") or "-"
         ip = state.get("ip") or "-"
         url = state.get("url") or "-"
+        listening_seconds = "-"
+        started_at = state.get("listening_since")
+        if isinstance(started_at, (int, float)):
+            listening_seconds = f"{int(monotonic() - started_at)}s"
         logger.info(
-            "  %s | %s | %s | %s | %s | %s", client_id, ip, mode, media_id, title, url
+            "  %s | %s | %s | %s | %s | %s | %s",
+            client_id,
+            ip,
+            mode,
+            media_id,
+            title,
+            url,
+            listening_seconds,
         )
 
 
@@ -765,6 +794,36 @@ def kick_watcher(app: Sanic) -> None:
                 logger.warning("Failed to kick websocket: loop not running")
 
 
+def kick_target_watcher(app: Sanic) -> None:
+    kick_targets = get_shared_kick_targets(app)
+    if kick_targets is None:
+        return
+    while True:
+        sleep(0.5)
+        items = list(kick_targets.items())
+        if not items:
+            continue
+        ws_by_id, ws_by_id_lock = ensure_ws_map_ctx(app)
+        loop = getattr(app.ctx, "main_loop", None)
+        if loop is None:
+            continue
+        now = monotonic()
+        for client_id, stamp in items:
+            with ws_by_id_lock:
+                ws = ws_by_id.get(client_id)
+            if ws is None:
+                if isinstance(stamp, (int, float)) and now - stamp > 5:
+                    kick_targets.pop(client_id, None)
+                continue
+            try:
+                run_coroutine_threadsafe(
+                    ws.close(code=1000, reason="Server kick"), loop
+                )
+            except RuntimeError:
+                logger.warning("Failed to kick websocket: loop not running")
+            kick_targets.pop(client_id, None)
+
+
 def debug_watcher(app: Sanic) -> None:
     debug_enabled = get_shared_debug_enabled(app)
     if debug_enabled is None:
@@ -789,9 +848,13 @@ def command_listener(app: Sanic) -> None:
         "kickall": command_kick_all,
         "list-all": command_list_all,
         "listall": command_list_all,
+        "clear": None,
+        "cls": None,
         "help": None,
     }
-    logger.info("Command listener ready: status, kick-all, list-all, debug, help")
+    logger.info(
+        "Command listener ready: status, kick-all, kick, list-all, clear, debug, help"
+    )
     while True:
         try:
             line = sys.stdin.readline()
@@ -803,7 +866,25 @@ def command_listener(app: Sanic) -> None:
         if not cmd:
             continue
         if cmd == "help":
-            logger.info("Commands: status, kick-all, list-all, debug, help")
+            logger.info(
+                "Commands: status, kick-all, kick <id>, list-all, clear, debug, help"
+            )
+            continue
+        if cmd in ("clear", "cls"):
+            system("cls" if sys.platform.startswith("win") else "clear")
+            continue
+        if cmd.startswith("kick "):
+            parts = cmd.split()
+            if len(parts) != 2:
+                logger.info("Usage: kick <client_id>")
+                continue
+            client_id = parts[1]
+            kick_targets = get_shared_kick_targets(app)
+            if kick_targets is None:
+                logger.warning("Kick failed: shared state not ready")
+                continue
+            kick_targets[client_id] = monotonic()
+            logger.info("Kick issued for %s", client_id)
             continue
         if cmd.startswith("debug"):
             parts = cmd.split()
@@ -928,6 +1009,7 @@ async def main_start(app: Sanic):
     app.shared_ctx.data = manager.dict()
     app.shared_ctx.client_state = manager.dict()
     app.shared_ctx.kick_generation = manager.Value("i", 0)
+    app.shared_ctx.kick_targets = manager.dict()
     config = load_config()
     debug_default = bool(config.get("debug_logging_default", False))
     app.shared_ctx.debug_enabled = manager.Value("i", 1 if debug_default else 0)
@@ -951,6 +1033,7 @@ async def main_start(app: Sanic):
 @app.before_server_start
 async def before_start(app: Sanic, _):
     ensure_ws_ctx(app)
+    ensure_ws_map_ctx(app)
     app.ctx.main_loop = get_event_loop()
     debug_enabled = get_shared_debug_enabled(app)
     if debug_enabled is not None:
@@ -959,6 +1042,7 @@ async def before_start(app: Sanic, _):
         for handler in logger.handlers:
             handler.setLevel(level)
     Thread(target=kick_watcher, args=(app,), daemon=True).start()
+    Thread(target=kick_target_watcher, args=(app,), daemon=True).start()
     Thread(target=debug_watcher, args=(app,), daemon=True).start()
 
 
@@ -1036,8 +1120,11 @@ async def wshandler(request: Request, ws: Websocket):
 
     active_websockets, active_websockets_lock = ensure_ws_ctx(request.app)
     client_state = get_shared_client_state(request.app)
+    ws_by_id, ws_by_id_lock = ensure_ws_map_ctx(request.app)
     with active_websockets_lock:
         active_websockets.add(ws)
+    with ws_by_id_lock:
+        ws_by_id[client_id] = ws
     if client_state is not None:
         client_state[client_id] = {
             "mode": "idle",
@@ -1045,6 +1132,7 @@ async def wshandler(request: Request, ws: Websocket):
             "title": None,
             "is_live": False,
             "ip": request.client_ip,
+            "listening_since": None,
         }
 
     try:
@@ -1072,6 +1160,8 @@ async def wshandler(request: Request, ws: Websocket):
     finally:
         with active_websockets_lock:
             active_websockets.discard(ws)
+        with ws_by_id_lock:
+            ws_by_id.pop(client_id, None)
         if client_state is not None:
             client_state.pop(client_id, None)
         stop_live_streams_for_client(request.app, id(ws))
