@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 
 """
-YouCube Server
+YC-Fork Server
 """
 
 # built-in modules
@@ -60,7 +60,7 @@ from yc_utils import (
     VIDEO_FORMAT,
 )
 
-VERSION = "0.1.1"  # https://commandcracker.github.io/YouCube/
+VERSION = "0.1.1"
 
 # one dfpwm chunk is 16 bits
 CHUNK_SIZE = 16

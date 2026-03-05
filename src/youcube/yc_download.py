@@ -106,6 +106,11 @@ def is_legacy_ssl_handshake_error(err: Exception) -> bool:
     return "SSLV3_ALERT_HANDSHAKE_FAILURE" in message or "LEGACY-SERVER-CONNECT" in message
 
 
+def is_format_unavailable_error(err: Exception) -> bool:
+    """Detects yt-dlp format-selection failures."""
+    return "REQUESTED FORMAT IS NOT AVAILABLE" in str(err).upper()
+
+
 def build_direct_audio_response(url: str, title: Optional[str] = None):
     """Builds a response tuple for direct audio streams."""
     media_id = live_stream_id_from_url(url)
@@ -144,35 +149,6 @@ def pick_audio_url(info: dict) -> Optional[str]:
         key=lambda fmt: (fmt.get("abr") or 0, fmt.get("tbr") or 0), reverse=True
     )
     return audio_formats[0].get("url")
-
-
-def pick_video_url(info: dict) -> Optional[str]:
-    """Selects a direct video URL from a yt-dlp info dict."""
-    if info.get("url") and info.get("vcodec") and info.get("vcodec") != "none":
-        return info.get("url")
-
-    formats = info.get("formats") or []
-    video_formats = [
-        fmt for fmt in formats if fmt.get("vcodec") and fmt.get("vcodec") != "none"
-    ]
-    if not video_formats:
-        return None
-    video_formats.sort(
-        key=lambda fmt: (
-            fmt.get("height") or 0,
-            fmt.get("tbr") or 0,
-            fmt.get("vbr") or 0,
-        ),
-        reverse=True,
-    )
-    return video_formats[0].get("url")
-
-
-def has_video_stream(info: dict) -> bool:
-    """Returns True if yt-dlp info contains a video stream."""
-    if info.get("vcodec") and info.get("vcodec") != "none":
-        return True
-    return pick_video_url(info) is not None
 
 
 def download_video(
@@ -507,12 +483,14 @@ def download(
             data = entries[0]
 
         """
-        If the video is extract from a playlist,
-        the video is extracted flat,
-        so we need to get missing information by running the extractor again.
+        Search/playlist results can be flat entries without format URLs.
+        Re-extract YouTube items by ID when key metadata is missing so
+        video availability and download decisions are based on full info.
         """
         if data.get("extractor") == "youtube" and (
-                data.get("view_count") is None or data.get("like_count") is None
+                data.get("view_count") is None
+                or data.get("like_count") is None
+                or (not data.get("formats") and not data.get("url"))
         ):
             try:
                 data = yt_dl.extract_info(data.get("id"), download=False)
@@ -522,23 +500,6 @@ def download(
                     [],
                     None,
                 )
-
-        if is_video and not has_video_stream(data):
-            is_video = False
-            width = None
-            height = None
-            yt_dl.params["format"] = "bestaudio/best"
-            run_coroutine_threadsafe(
-                resp.send(
-                    dumps(
-                        {
-                            "action": "status",
-                            "message": "Video not available, falling back to audio.",
-                        }
-                    )
-                ),
-                loop,
-            )
 
         if not is_video and is_direct_audio_stream_info(data):
             audio_url = pick_audio_url(data) or url
@@ -627,11 +588,41 @@ def download(
             try:
                 yt_dl.process_ie_result(data, download=True)
             except DownloadError as e:
-                return (
-                    {"action": "error", "message": str(e)},
-                    [],
-                    None,
-                )
+                if is_video and is_format_unavailable_error(e):
+                    # Decide fallback based on actual download failure instead of
+                    # incomplete pre-extraction metadata.
+                    is_video = False
+                    width = None
+                    height = None
+                    yt_dl.params["format"] = "bestaudio/best"
+                    run_coroutine_threadsafe(
+                        resp.send(
+                            dumps(
+                                {
+                                    "action": "status",
+                                    "message": "Video not available, falling back to audio.",
+                                }
+                            )
+                        ),
+                        loop,
+                    )
+                    audio_downloaded = is_audio_already_downloaded(media_id)
+                    video_downloaded = True
+                    if not audio_downloaded:
+                        try:
+                            yt_dl.process_ie_result(data, download=True)
+                        except DownloadError as retry_error:
+                            return (
+                                {"action": "error", "message": str(retry_error)},
+                                [],
+                                None,
+                            )
+                else:
+                    return (
+                        {"action": "error", "message": str(e)},
+                        [],
+                        None,
+                    )
 
         # TODO: Thread audio & video download
 
