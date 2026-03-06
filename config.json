@@ -10,5 +10,9 @@
     "client_secret": null,
     "market": "NL"
   },
-  "debug_logging_default": false
+  "debug_logging_default": false,
+  "admin_panel_web": {
+    "enabled": false,
+    "password": "change_me"
+  }
 }

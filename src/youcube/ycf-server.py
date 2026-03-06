@@ -6,12 +6,13 @@ YC-Fork Server
 """
 
 # built-in modules
+import warnings
 from asyncio import get_event_loop, run_coroutine_threadsafe, sleep as async_sleep
 from base64 import b64encode
 from datetime import datetime
 from multiprocessing import Manager
 from os import getenv, remove, system
-from os.path import exists, getsize, join
+from os.path import exists, getsize, join, dirname, abspath
 from shutil import which
 from subprocess import DEVNULL, Popen
 import sys
@@ -19,6 +20,15 @@ import logging
 from threading import Event, Lock, Thread
 from time import monotonic, sleep
 from typing import Any, List, Optional, Tuple, Type, Union
+
+# Suppress the specific deprecation warning from sanic
+# We use .* to match the [DEPRECATION v...] prefix
+warnings.filterwarnings(
+    "ignore",
+    message=r".*Passing the loop argument to listeners is deprecated",
+    category=DeprecationWarning,
+    module="sanic.logging.deprecation"
+)
 
 # optional pip module
 try:
@@ -41,10 +51,12 @@ from sanic.compat import open_async
 from sanic.exceptions import SanicException
 from sanic.handlers import ErrorHandler
 from sanic.response import raw, text
+from sanic_ext import Extend
 from spotipy import MemoryCacheHandler, SpotifyClientCredentials
 from spotipy.client import Spotify
 
 # local modules
+from yc_admin import admin_bp
 from yc_colours import RESET, Foreground
 from yc_download import DATA_FOLDER, FFMPEG_PATH, SANJUUNI_PATH, download
 from yc_logging import NO_COLOR, setup_logging
@@ -659,6 +671,13 @@ app.config.WEBSOCKET_PING_INTERVAL = 0
 if getenv("SANIC_NO_UVLOOP"):
     app.config.USE_UVLOOP = False
 
+app.config.TEMPLATING_PATH_TO_TEMPLATES = join(dirname(abspath(__file__)), 'web')
+
+admin_config = config.get("admin_panel_web", {})
+if admin_config.get("enabled", False):
+    Extend(app, config={"templating": {"path_to_templates": join(dirname(abspath(__file__)), 'web')}})
+    app.blueprint(admin_bp)
+
 
 def ensure_live_stream_ctx(app: Sanic) -> Tuple[dict, Lock]:
     """Ensure live stream storage exists for the current process."""
@@ -852,9 +871,7 @@ def command_listener(app: Sanic) -> None:
         "cls": None,
         "help": None,
     }
-    logger.info(
-        "Command listener ready: status, kick-all, kick, list-all, clear, debug, help"
-    )
+    # logger.info("Command listener ready: status, kick-all, kick, list-all, clear, debug, help")
     while True:
         try:
             line = sys.stdin.readline()
@@ -985,10 +1002,48 @@ def data_cache_cleaner(data: dict):
     except KeyboardInterrupt:
         pass
 
+def print_startup_banner(admin_enabled: bool):
+    """Prints a startup banner with component status."""
+    if NO_COLOR:
+        border = "=" * 40
+        title = "YC-Fork Server"
+    else:
+        border = f"{Foreground.BRIGHT_BLUE}{'=' * 40}{RESET}"
+        title = f"{Foreground.BRIGHT_CYAN}YC-Fork Server{RESET}"
+
+    logger.info(border)
+    logger.info(f" {title} v{VERSION}")
+    logger.info(border)
+    
+    # Components
+    components = []
+    
+    # Spotipy
+    if spotipy:
+        components.append(("Spotipy", "Enabled", Foreground.GREEN))
+    else:
+        components.append(("Spotipy", "Disabled", Foreground.RED))
+        
+    # Admin Panel
+    if admin_enabled:
+        components.append(("Admin Panel", "Enabled (/admin)", Foreground.GREEN))
+    else:
+        components.append(("Admin Panel", "Disabled", Foreground.RED))
+        
+    # Commands
+    components.append(("Commands", "Enabled", Foreground.GREEN))
+
+    for name, status, color in components:
+        if NO_COLOR:
+            logger.info(f" {name:<15} : {status}")
+        else:
+            logger.info(f" {name:<15} : {color}{status}{RESET}")
+            
+    logger.info(border)
 
 # pylint: disable=redefined-outer-name
 @app.main_process_ready
-async def ready(app: Sanic, _):
+async def ready(app: Sanic):
     """See https://sanic.dev/en/guide/basics/listeners.html"""
     if DATA_CACHE_CLEANUP_INTERVAL > 0 and DATA_CACHE_CLEANUP_AFTER > 0:
         app.manager.manage(
@@ -1021,10 +1076,8 @@ async def main_start(app: Sanic):
     if which(SANJUUNI_PATH) is None:
         logger.warning("Sanjuuni not found.")
 
-    if spotipy:
-        logger.info("Spotipy Enabled")
-    else:
-        logger.info("Spotipy Disabled")
+    admin_config = config.get("admin_panel_web", {})
+    print_startup_banner(admin_config.get("enabled", False))
 
     if not sys.stdin.closed:
         Thread(target=command_listener, args=(app,), daemon=True).start()
@@ -1032,6 +1085,12 @@ async def main_start(app: Sanic):
 
 @app.before_server_start
 async def before_start(app: Sanic):
+    warnings.filterwarnings(
+        "ignore",
+        message=r".*Passing the loop argument to listeners is deprecated",
+        category=DeprecationWarning,
+        module="sanic.logging.deprecation"
+    )
     ensure_ws_ctx(app)
     ensure_ws_map_ctx(app)
     app.ctx.main_loop = get_event_loop()

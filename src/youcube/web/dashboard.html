@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Admin Dashboard</title>
+    <style>
+        body { font-family: sans-serif; background-color: #282c34; color: #abb2bf; margin: 0; padding: 2rem; }
+        h1 { color: #61afef; }
+        table { width: 100%; border-collapse: collapse; margin-top: 2rem; }
+        th, td { padding: 0.8rem; text-align: left; border-bottom: 1px solid #3b4048; }
+        th { background-color: #3b4048; }
+        .actions a { color: #e06c75; text-decoration: none; margin-right: 1rem; }
+        .header { display: flex; justify-content: space-between; align-items: center; }
+        .header a { color: #61afef; text-decoration: none; }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>Admin Dashboard</h1>
+        <div>
+            <a href="/admin/kick-all">Kick All</a>
+            <a href="/admin/logout" style="margin-left: 1rem;">Logout</a>
+        </div>
+    </div>
+
+    <table>
+        <thead>
+            <tr>
+                <th>Client ID</th>
+                <th>IP</th>
+                <th>Mode</th>
+                <th>Media ID</th>
+                <th>Title</th>
+                <th>URL</th>
+                <th>Duration</th>
+                <th>Actions</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for client in clients %}
+            <tr>
+                <td>{{ client.id }}</td>
+                <td>{{ client.ip }}</td>
+                <td>{{ client.mode }}</td>
+                <td>{{ client.media_id }}</td>
+                <td>{{ client.title }}</td>
+                <td>{{ client.url }}</td>
+                <td>{{ client.duration }}</td>
+                <td class="actions">
+                    <a href="/admin/kick/{{ client.id }}">Kick</a>
+                </td>
+            </tr>
+            {% else %}
+            <tr>
+                <td colspan="8" style="text-align: center;">No active clients.</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</body>
+</html>
