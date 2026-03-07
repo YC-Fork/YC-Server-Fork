@@ -9,6 +9,7 @@ This fork has lots of new features and is a lot more stable.
 ### Additional Features
 - Radio stations support, live streams support from youtube, twitch, etc. 
 - Server-sided command system for more control.
+- Server-sided admin dashboard
 - Lots and lots of bug fixes.
 
 ## Requirements
