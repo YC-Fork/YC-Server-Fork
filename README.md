@@ -53,29 +53,40 @@ Ffmpeg and node.js are required, so install them first. There is a script for De
 
 ## Configuration
 
-The server reads optional settings from `config.json` in the project root.
+The server reads settings from `config.json` in the project root. The settings are grouped under logical categories:
 
-- `cookie_file`: Optional path to a `cookies.txt` file for yt-dlp.
-- `js_runtimes.node.path`: Optional path to a Node.js binary for yt-dlp JS challenges.
-- `spotify.client_id`: Optional Spotify client ID. If `null` or empty, falls back to env variable `SPOTIPY_CLIENT_ID`.
-- `spotify.client_secret`: Optional Spotify client secret. If `null` or empty, falls back to env variable `SPOTIPY_CLIENT_SECRET`.
-- `spotify.market`: Optional market/region for Spotify lookups. Default is `NL`.
-- `debug_logging_default`: Optional boolean to enable debug logs by default. Default is `false`.
+### Server Settings (`server_settings`)
+- `host`: The host address to bind the server to. Default is `"0.0.0.0"`. (Can also be set via the `HOST` environment variable).
+- `port`: The port to run the server on. Default is `5000`. (Can also be set via the `PORT` environment variable).
 - `admin_panel_web`: Configuration for the optional web-based admin panel.
   - `enabled`: Set to `true` to enable the admin panel. Default is `false`.
   - `password`: The password required to log in to the admin panel. **Change this from the default!**
+  - `url_prefix`: The path prefix to access the admin site. Default is `"/admin"`.
+
+### Path Settings (`path_settings`)
+- `cookie_file`: Optional path to a `cookies.txt` file for yt-dlp.
+- `js_runtimes.node.path`: Optional path to a Node.js binary for yt-dlp JS challenges.
+
+### Debug Settings (`debug_settings`)
+- `debug_logging_default`: Optional boolean to enable debug logs by default. Default is `false`.
+
+### Spotify Settings (`spotify`)
+- `client_id`: Optional Spotify client ID. If `null` or empty, falls back to env variable `SPOTIPY_CLIENT_ID`.
+- `client_secret`: Optional Spotify client secret. If `null` or empty, falls back to env variable `SPOTIPY_CLIENT_SECRET`.
+- `market`: Optional market/region for Spotify lookups. Default is `NL`.
 
 ## Admin Panel Web (Optional)
 
 The server includes an optional web-based admin panel to view active clients and kick them.
 
 **To enable it:**
-1.  Open `config.json`.
-2.  Set `"enabled": true` under the `"admin_panel_web"` section.
-3.  Change `"password": "change_me"` to a secure password.
-4.  Restart the server.
+1. Open `config.json`.
+2. Set `"enabled": true` under the `server_settings.admin_panel_web` block.
+3. Change `"password": "change_me"` to a secure password.
+4. Optionally customize the access path by editing `"url_prefix"`.
+5. Restart the server.
 
-Access the panel at `http://<your-server-ip>:5000/admin`.
+Access the panel at `http://<your-server-ip>:<port><url_prefix>` (e.g., `http://localhost:5000/admin`).
 
 *Note: The required dependencies (`sanic-ext`, `Jinja2`) are automatically installed if you followed the "Getting started" guide.*
 
