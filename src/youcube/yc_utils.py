@@ -66,9 +66,9 @@ def cap_width_and_height(width: int, height: int) -> Tuple[int, int]:
 
 VIDEO_FORMAT = "32vid"
 AUDIO_FORMAT = "dfpwm"
-DATA_FOLDER = join(dirname(abspath(__file__)), "data")
 ROOT_DIR = dirname(dirname(dirname(abspath(__file__))))
 CONFIG_PATH = join(ROOT_DIR, "config.json")
+DATA_FOLDER = join(ROOT_DIR, "data")
 
 
 def get_video_name(media_id: str, width: int, height: int) -> str:

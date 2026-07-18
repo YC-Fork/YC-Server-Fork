@@ -38,7 +38,8 @@ def login_required(wrapped):
             if not check_auth(request):
                 if request.path.endswith("/ws"): # For websockets, just close
                     return
-                return response.redirect("/admin/login")
+                prefix = request.app.blueprints["admin"].url_prefix
+                return response.redirect(f"{prefix}/login")
             return await f(request, *args, **kwargs)
         return decorated_function
     return decorator(wrapped)
@@ -104,7 +105,8 @@ async def login(request: Request):
     if request.method == "POST":
         password = request.form.get("password")
         config = load_config()
-        admin_config = config.get("admin_panel_web", {})
+        server_settings = config.get("server_settings", {}) if isinstance(config, dict) else {}
+        admin_config = server_settings.get("admin_panel_web", {})
         admin_password = admin_config.get("password") or getenv("ADMIN_PASSWORD")
         
         if not admin_password:
@@ -115,12 +117,13 @@ async def login(request: Request):
             )
 
         if password == admin_password:
-            resp = response.redirect("/admin")
+            prefix = request.app.blueprints["admin"].url_prefix
+            resp = response.redirect(prefix)
             resp.add_cookie(
                 AUTH_COOKIE_NAME,
                 AUTH_COOKIE_VALUE,
                 httponly=True,
-                path="/admin",
+                path=prefix,
             )
             return resp
         
@@ -134,8 +137,9 @@ async def login(request: Request):
 @admin_bp.route("/logout")
 async def logout(request: Request):
     """Logs out the admin."""
-    resp = response.redirect("/admin/login")
-    resp.delete_cookie(AUTH_COOKIE_NAME, path="/admin")
+    prefix = request.app.blueprints["admin"].url_prefix
+    resp = response.redirect(f"{prefix}/login")
+    resp.delete_cookie(AUTH_COOKIE_NAME, path=prefix)
     return resp
 
 @admin_bp.route("/")
@@ -151,7 +155,8 @@ async def dashboard(request: Request):
     return await render("dashboard.html", context={
         "clients": clients,
         "current_version": VERSION,
-        "latest_version": latest_version
+        "latest_version": latest_version,
+        "admin_prefix": request.app.blueprints["admin"].url_prefix
     })
 
 @admin_bp.websocket("/ws")
@@ -174,7 +179,8 @@ async def kick_client(request: Request, client_id: str):
     kick_targets = request.app.shared_ctx.kick_targets
     if kick_targets is not None:
         kick_targets[client_id] = monotonic()
-    return response.redirect("/admin")
+    prefix = request.app.blueprints["admin"].url_prefix
+    return response.redirect(prefix)
 
 @admin_bp.route("/kick-all")
 @login_required
@@ -183,4 +189,5 @@ async def kick_all(request: Request):
     kick_generation = request.app.shared_ctx.kick_generation
     if kick_generation is not None:
         kick_generation.value += 1
-    return response.redirect("/admin")
+    prefix = request.app.blueprints["admin"].url_prefix
+    return response.redirect(prefix)

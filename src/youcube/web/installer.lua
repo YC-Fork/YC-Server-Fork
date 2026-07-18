@@ -77,3 +77,18 @@ for path, download_url in pairs(files) do
 end
 
 print("Installation/Update complete!")
+
+write("Do you want to add a startup file? (y/N): ")
+local input = read()
+if input and (input:lower() == "y" or input:lower() == "yes") then
+    local file, err = fs.open("/startup.lua", "w")
+    if file then
+        file.write('shell.run("yc-fork-client")\n')
+        file.close()
+        term.setTextColor(colors.lime)
+        print("Created /startup.lua!")
+        term.setTextColor(colors.white)
+    else
+        printError("Failed to create /startup.lua: " .. (err or "unknown error"))
+    end
+end

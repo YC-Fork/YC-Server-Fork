@@ -1,18 +1,28 @@
 {
-  "cookie_file": "/path/to/cookies.txt",
-  "js_runtimes": {
-    "node": {
-      "path": "/path/to/node"
+  "server_settings": {
+    "host": "0.0.0.0",
+    "port": 5000,
+    "admin_panel_web": {
+      "enabled": false,
+      "password": "change_me",
+      "url_prefix": "/admin"
     }
+  },
+  "path_settings": {
+    "cookie_file": "/path/to/cookies.txt",
+    "js_runtimes": {
+      "node": {
+        "path": "/path/to/node"
+      }
+    }
+  },
+  "debug_settings": {
+    "debug_logging_default": false
   },
   "spotify": {
     "client_id": null,
     "client_secret": null,
     "market": "NL"
-  },
-  "debug_logging_default": false,
-  "admin_panel_web": {
-    "enabled": false,
-    "password": "change_me"
   }
 }
+6

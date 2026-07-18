@@ -657,12 +657,26 @@ if getenv("SANIC_NO_UVLOOP"):
 
 app.config.TEMPLATING_PATH_TO_TEMPLATES = join(dirname(abspath(__file__)), 'web')
 
-admin_config = config.get("admin_panel_web", {})
+server_settings = config.get("server_settings", {}) if isinstance(config, dict) else {}
+admin_config = server_settings.get("admin_panel_web", {})
+url_prefix = admin_config.get("url_prefix") or "/admin"
+if not url_prefix.startswith("/"):
+    url_prefix = "/" + url_prefix
+
 if admin_config.get("enabled", False):
     Extend(app, config={"templating": {"path_to_templates": join(dirname(abspath(__file__)), 'web')}})
-    app.blueprint(admin_bp)
+    app.blueprint(admin_bp, url_prefix=url_prefix)
 else:
-    pass
+    from sanic.response import html
+    @app.route(url_prefix)
+    @app.route(f"{url_prefix}/<path:path>")
+    async def admin_disabled_page(request: Request, path: str = ""):
+        return html(
+            "<html><head><title>Admin Panel Disabled</title>"
+            "<style>body { font-family: sans-serif; display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0; background: #121212; color: #ffffff; } .container { text-align: center; padding: 30px; border-radius: 8px; border: 1px solid #333; background: #1e1e1e; box-shadow: 0 4px 12px rgba(0,0,0,0.5); }</style>"
+            "</head><body><div class='container'><h1>Admin Panel Disabled</h1><p>The admin panel is disabled on this server.</p></div></body></html>",
+            status=403
+        )
 
 
 def ensure_live_stream_ctx(app: Sanic) -> Tuple[dict, Lock]:
@@ -873,7 +887,7 @@ def command_help(app: Sanic) -> None:
         if NO_COLOR:
             logger.info(f" {cmd:<15} : {desc}")
         else:
-            logger.info(f" {name:<15} : {color}{status}{RESET}")
+            logger.info(f" {Foreground.BRIGHT_GREEN}{cmd:<15}{RESET} : {desc}")
 
     logger.info(border)
 
@@ -1054,6 +1068,59 @@ def print_startup_banner(admin_enabled: bool):
     # Commands
     components.append(("Commands", "Enabled", Foreground.GREEN))
 
+    # Node.js Check
+    path_settings = config.get("path_settings", {}) if isinstance(config, dict) else {}
+    js_config = path_settings.get("js_runtimes", {}) if isinstance(path_settings, dict) else {}
+    node_path = js_config.get("node", {}).get("path") if isinstance(js_config, dict) else None
+    node_bin = node_path or which("node")
+    
+    node_status = "Disabled/Missing"
+    node_color = Foreground.RED
+    if node_bin and (exists(node_bin) or which(node_bin)):
+        resolved_bin = node_bin if exists(node_bin) else which(node_bin)
+        if resolved_bin:
+            try:
+                import subprocess
+                res = subprocess.run([resolved_bin, "--version"], capture_output=True, text=True, timeout=2)
+                ver_str = res.stdout.strip()
+                if ver_str.startswith("v"):
+                    try:
+                        major_ver = int(ver_str[1:].split(".")[0])
+                        if major_ver >= 22:
+                            node_status = f"Enabled ({ver_str})"
+                            node_color = Foreground.GREEN
+                        else:
+                            node_status = f"Unsupported ({ver_str} - Need v22+)"
+                            node_color = Foreground.YELLOW
+                    except ValueError:
+                        node_status = f"Enabled ({ver_str})"
+                        node_color = Foreground.GREEN
+                else:
+                    node_status = f"Found ({ver_str})"
+                    node_color = Foreground.GREEN
+            except Exception as e:
+                node_status = f"Error ({type(e).__name__})"
+                node_color = Foreground.RED
+    
+    components.append(("Node.js", node_status, node_color))
+
+    # Cookies File Check
+    cookie_file = path_settings.get("cookie_file") if isinstance(path_settings, dict) else None
+    if cookie_file:
+        if exists(cookie_file):
+            try:
+                size = getsize(cookie_file)
+                if size > 0:
+                    components.append(("Cookies File", f"Enabled ({cookie_file})", Foreground.GREEN))
+                else:
+                    components.append(("Cookies File", f"Empty File ({cookie_file})", Foreground.YELLOW))
+            except OSError:
+                components.append(("Cookies File", f"Error reading ({cookie_file})", Foreground.RED))
+        else:
+            components.append(("Cookies File", f"Not Found ({cookie_file})", Foreground.RED))
+    else:
+        components.append(("Cookies File", "Disabled (No config)", Foreground.YELLOW))
+
     for name, status, color in components:
         if NO_COLOR:
             logger.info(f" {name:<15} : {status}")
@@ -1087,7 +1154,8 @@ async def main_start(app: Sanic):
     app.shared_ctx.kick_generation = manager.Value("i", 0)
     app.shared_ctx.kick_targets = manager.dict()
     config = load_config()
-    debug_default = bool(config.get("debug_logging_default", False))
+    debug_settings = config.get("debug_settings", {}) if isinstance(config, dict) else {}
+    debug_default = bool(debug_settings.get("debug_logging_default", False))
     app.shared_ctx.debug_enabled = manager.Value("i", 1 if debug_default else 0)
     ensure_live_stream_ctx(app)
 
@@ -1097,7 +1165,8 @@ async def main_start(app: Sanic):
     if which(SANJUUNI_PATH) is None:
         logger.warning("Sanjuuni not found.")
 
-    admin_config = config.get("admin_panel_web", {})
+    server_settings = config.get("server_settings", {}) if isinstance(config, dict) else {}
+    admin_config = server_settings.get("admin_panel_web", {})
     print_startup_banner(admin_config.get("enabled", False))
 
     if not sys.stdin.closed:
@@ -1261,8 +1330,17 @@ def main() -> None:
     """
     Run all needed services
     """
-    port = int(getenv("PORT", "5000"))
-    host = getenv("HOST", "0.0.0.0")
+    server_settings = config.get("server_settings", {}) if isinstance(config, dict) else {}
+    port = server_settings.get("port") or getenv("PORT")
+    if port is not None:
+        try:
+            port = int(port)
+        except ValueError:
+            port = 5000
+    else:
+        port = 5000
+
+    host = server_settings.get("host") or getenv("HOST") or "0.0.0.0"
     fast = not getenv("NO_FAST")
 
     app.run(host=host, port=port, fast=fast, access_log=True)

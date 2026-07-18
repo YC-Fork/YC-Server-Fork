@@ -9,7 +9,7 @@ Download Functionality of YC
 from asyncio import run_coroutine_threadsafe
 from hashlib import sha1
 from os import getenv, listdir, remove
-from os.path import abspath, dirname, join
+from os.path import abspath, dirname, exists, join
 from tempfile import TemporaryDirectory
 from time import time, sleep
 from typing import Any, Dict, Optional, Tuple
@@ -21,6 +21,7 @@ from yc_logging import NO_COLOR, YTDLPLogger, logger
 from yc_magic import run_with_live_output
 from yc_spotify import SpotifyURLProcessor
 from yc_utils import (
+    DATA_FOLDER,
     cap_width_and_height,
     create_data_folder_if_not_present,
     get_audio_name,
@@ -50,7 +51,6 @@ from yt_dlp.utils import DownloadError
 # pylint: disable=too-many-arguments
 # pylint: disable=too-many-branches
 
-DATA_FOLDER = join(dirname(abspath(__file__)), "data")
 FFMPEG_PATH = getenv("FFMPEG_PATH", "ffmpeg")
 SANJUUNI_PATH = getenv("SANJUUNI_PATH", "sanjuuni")
 DISABLE_OPENCL = bool(getenv("DISABLE_OPENCL"))
@@ -191,7 +191,8 @@ def pick_audio_url(info: dict) -> Optional[str]:
 
 def download_video(
         temp_dir: str, media_id: str, resp: Websocket, loop, width: int, height: int,
-        client_id: str = None, client_state = None
+        client_id: str = None, client_state = None, fps: Optional[float] = None,
+        total_frames: int = 0
 ):
     """
     Converts the downloaded video to 32vid
@@ -210,6 +211,25 @@ def download_video(
         prefix = f"{Foreground.BRIGHT_YELLOW}[Sanjuuni]{RESET} "
 
     def handler(line):
+        # Intercept and correct 0 total frames / negative remaining time for variable framerate streams
+        if total_frames > 0:
+            import re
+            match = re.search(r"frame\s+(\d+)/0", line)
+            if match:
+                current_frame = int(match.group(1))
+                rem_frames = max(0, total_frames - current_frame)
+                fps_match = re.search(r"(\d+)\s+fps", line)
+                if fps_match:
+                    curr_fps = float(fps_match.group(1))
+                    if curr_fps > 0:
+                        rem_seconds = int(rem_frames / curr_fps)
+                        m = rem_seconds // 60
+                        s = rem_seconds % 60
+                        rem_str = f"{m:02d}:{s:02d}"
+                        line = re.sub(r"frame\s+\d+/0", f"frame {current_frame}/{total_frames}", line)
+                        line = re.sub(r"remaining\s+\d+:-\d+", f"remaining {rem_str}", line)
+                        line = re.sub(r"remaining\s+\d+:\d+", f"remaining {rem_str}", line)
+
         logger.debug("%s%s", prefix, line)
         run_coroutine_threadsafe(
             resp.send(dumps({"action": "status", "message": line})), loop
@@ -236,6 +256,49 @@ def download_video(
             resp.send(dumps({"action": "error", "message": "Faild to convert video!"})),
             loop,
         )
+    else:
+        # Fix the 0 FPS issue and cap FPS to 20 for smoother CC playback
+        video_file_path = join(DATA_FOLDER, get_video_name(media_id, width, height))
+        try:
+            with open(video_file_path, "r", encoding="utf-8") as f:
+                lines = f.readlines()
+            
+            if len(lines) >= 2:
+                version_header = lines[0]
+                try:
+                    source_fps = float(lines[1].strip())
+                except ValueError:
+                    source_fps = 0.0
+
+                if source_fps <= 0.0:
+                    source_fps = float(fps) if (fps and fps > 0) else 20.0
+
+                target_fps = 20.0
+                if source_fps > target_fps:
+                    # Downsample frames to target_fps (20 FPS)
+                    frames = lines[2:]
+                    total_duration = len(frames) / source_fps
+                    total_target_frames = int(total_duration * target_fps)
+                    
+                    downsampled_frames = []
+                    for j in range(total_target_frames):
+                        orig_index = int(round((j / target_fps) * source_fps))
+                        if orig_index < len(frames):
+                            downsampled_frames.append(frames[orig_index])
+                            
+                    new_lines = [version_header, f"{int(target_fps)}\n"] + downsampled_frames
+                    with open(video_file_path, "w", encoding="utf-8") as f:
+                        f.writelines(new_lines)
+                    logger.info("Downsampled 32vid from %s FPS to %s FPS (reduced %s to %s frames)", 
+                                source_fps, target_fps, len(frames), len(downsampled_frames))
+                else:
+                    # Just write the corrected FPS if it was 0
+                    lines[1] = f"{int(source_fps)}\n"
+                    with open(video_file_path, "w", encoding="utf-8") as f:
+                        f.writelines(lines)
+                    logger.info("Fixed 32vid header FPS, set to %s", int(source_fps))
+        except Exception as exc:
+            logger.warning("Failed to process 32vid FPS header: %s", exc)
 
 
 def download_audio(temp_dir: str, media_id: str, resp: Websocket, loop, client_id: str = None, client_state = None):
@@ -446,8 +509,9 @@ def download(
     # FIXME: Cleanup on Exception
     with TemporaryDirectory(prefix="youcube-") as temp_dir:
         config = load_config()
-        cookie_file = config.get("cookie_file")
-        js_runtimes = config.get("js_runtimes")
+        path_settings = config.get("path_settings", {}) if isinstance(config, dict) else {}
+        cookie_file = path_settings.get("cookie_file")
+        js_runtimes = path_settings.get("js_runtimes")
         format_selector = "bestvideo+bestaudio/best" if is_video else "bestaudio/best"
         yt_dl_options = {
             "format": format_selector,
@@ -457,18 +521,30 @@ def download(
             "extract_flat": "in_playlist",
             "progress_hooks": [my_hook],
             "logger": YTDLPLogger(),
+            "verbose": True,
             "force_ipv4": True,
             "concurrent_fragment_downloads": 8,
             "extractor_args": {
                 "youtube": {
-                    "player_client": ["ios", "web"]
+                    "player_client": ["android", "web", "default"],
+                    "skip": ["webpage", "configs"]
                 }
             }
         }
-        if cookie_file:
+        if cookie_file and not cookie_file.startswith("/path/to") and exists(cookie_file):
             yt_dl_options["cookiefile"] = cookie_file
         if js_runtimes:
-            yt_dl_options["js_runtimes"] = js_runtimes
+            cleaned_runtimes = {}
+            for rt_name, rt_conf in js_runtimes.items():
+                if isinstance(rt_conf, dict):
+                    rt_path = rt_conf.get("path")
+                    if rt_path and not rt_path.startswith("/path/to") and exists(rt_path):
+                        cleaned_runtimes[rt_name] = {"path": rt_path}
+                    else:
+                        cleaned_runtimes[rt_name] = {}
+                else:
+                    cleaned_runtimes[rt_name] = {}
+            yt_dl_options["js_runtimes"] = cleaned_runtimes
 
         yt_dl = YoutubeDL(yt_dl_options)
 
@@ -692,7 +768,11 @@ def download(
                 download_audio(temp_dir, media_id, resp, loop, client_id, client_state)
 
             if not video_downloaded and is_video:
-                download_video(temp_dir, media_id, resp, loop, width, height, client_id, client_state)
+                # Extract actual video FPS and duration from metadata
+                fps = data.get("fps")
+                duration = data.get("duration")
+                total_frames = int(duration * fps) if (duration and fps) else 0
+                download_video(temp_dir, media_id, resp, loop, width, height, client_id, client_state, fps=fps, total_frames=total_frames)
 
     out = {
         "action": "media",

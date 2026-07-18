@@ -68,8 +68,8 @@
             {% endif %}
         </div>
         <div>
-            <a href="/admin/kick-all">Kick All</a>
-            <a href="/admin/logout" style="margin-left: 1rem;">Logout</a>
+            <a href="{{ admin_prefix }}/kick-all">Kick All</a>
+            <a href="{{ admin_prefix }}/logout" style="margin-left: 1rem;">Logout</a>
         </div>
     </div>
 
@@ -102,7 +102,7 @@
                     {% if client.url %}
                     <a href="{{ client.url }}" target="_blank" class="source-link">Source</a>
                     {% endif %}
-                    <a href="/admin/kick/{{ client.id }}">Kick</a>
+                    <a href="{{ admin_prefix }}/kick/{{ client.id }}">Kick</a>
                 </td>
             </tr>
             {% else %}
@@ -120,7 +120,7 @@
 
         function connect() {
             const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-            ws = new WebSocket(`${protocol}//${window.location.host}/admin/ws`);
+            ws = new WebSocket(`${protocol}//${window.location.host}{{ admin_prefix }}/ws`);
 
             ws.onopen = () => {
                 statusIndicator.classList.add('connected');
@@ -178,7 +178,7 @@
                         <td>${client.play_duration}</td>
                         <td class="actions">
                             ${sourceLink}
-                            <a href="/admin/kick/${client.id}">Kick</a>
+                            <a href="{{ admin_prefix }}/kick/${client.id}">Kick</a>
                         </td>
                     </tr>
                 `;
