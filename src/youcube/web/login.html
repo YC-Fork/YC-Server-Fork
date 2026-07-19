@@ -1,29 +1,129 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-g">
+    <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Admin Login</title>
+    <title>Admin Login — YC-Fork</title>
+    <!-- Tailwind v4 Standalone Browser Script -->
+    <script src="https://unpkg.com/@tailwindcss/browser@4"></script>
+    <style type="text/tailwindcss">
+        @variant dark (.dark &);
+    </style>
+    <script>
+        // Init theme immediately to prevent flashing
+        const savedTheme = localStorage.getItem('theme');
+        const systemPrefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+        if (savedTheme === 'dark' || (!savedTheme && systemPrefersDark)) {
+            document.documentElement.classList.add('dark');
+        } else {
+            document.documentElement.classList.remove('dark');
+        }
+    </script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <style>
-        body { font-family: sans-serif; background-color: #282c34; color: #abb2bf; display: flex; justify-content: center; align-items: center; height: 100vh; }
-        .login-container { background-color: #3b4048; padding: 2rem; border-radius: 8px; box-shadow: 0 4px 8px rgba(0,0,0,0.3); }
-        h1 { text-align: center; color: #61afef; }
-        form { display: flex; flex-direction: column; }
-        input { padding: 0.5rem; margin-bottom: 1rem; border: 1px solid #1c1f24; border-radius: 4px; background-color: #21252b; color: #abb2bf; }
-        button { padding: 0.7rem; background-color: #61afef; color: #282c34; border: none; border-radius: 4px; cursor: pointer; }
-        .error { color: #e06c75; text-align: center; margin-top: 1rem; }
+        body {
+            font-family: 'Outfit', sans-serif;
+        }
     </style>
 </head>
-<body>
-    <div class="login-container">
-        <h1>Admin Login</h1>
-        <form method="post">
-            <input type="password" name="password" placeholder="Password" required>
-            <button type="submit">Login</button>
-        </form>
-        {% if error %}
-            <p class="error">{{ error }}</p>
-        {% endif %}
+<body class="transition-colors duration-300 bg-slate-50 text-slate-900 dark:bg-slate-950 dark:text-slate-100 flex items-center justify-center min-h-screen p-4 overflow-hidden relative">
+    
+    <!-- Theme Toggle Button -->
+    <button onclick="toggleTheme()" id="themeIcon" class="absolute top-4 right-4 p-2.5 rounded-xl bg-white/70 dark:bg-slate-900/60 backdrop-blur-md border border-slate-200/50 dark:border-slate-800/30 hover:bg-white dark:hover:bg-slate-900 shadow-md hover:shadow-lg transition-all cursor-pointer z-50">
+        <!-- SVG injected by JS -->
+    </button>
+
+    <!-- Background Decorative Gradients -->
+    <div class="absolute -top-40 -left-40 w-96 h-96 bg-sky-500/10 dark:bg-sky-500/5 rounded-full blur-3xl pointer-events-none"></div>
+    <div class="absolute -bottom-40 -right-40 w-96 h-96 bg-indigo-500/10 dark:bg-indigo-500/5 rounded-full blur-3xl pointer-events-none"></div>
+
+    <div class="w-full max-w-md transition-all duration-300 scale-95 opacity-0 animate-fade-in hover:scale-100">
+        <style>
+            @keyframes fadeIn {
+                from { opacity: 0; transform: scale(0.95); }
+                to { opacity: 1; transform: scale(1); }
+            }
+            .animate-fade-in {
+                animation: fadeIn 0.4s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+            }
+        </style>
+
+        <div class="backdrop-blur-md bg-white/70 dark:bg-slate-900/60 border border-slate-200/50 dark:border-slate-800/30 p-8 rounded-2xl shadow-2xl">
+            <div class="text-center mb-8">
+                <div class="inline-flex items-center justify-center w-12 h-12 rounded-xl bg-gradient-to-tr from-sky-500 to-indigo-600 text-white font-bold text-xl shadow-lg mb-4">
+                    YC
+                </div>
+                <h1 class="text-2xl font-bold tracking-tight bg-gradient-to-r from-sky-500 to-indigo-500 bg-clip-text text-transparent">
+                    YC-Fork Server
+                </h1>
+                <p class="text-slate-500 dark:text-slate-400 text-sm mt-1">
+                    Enter password to access the admin dashboard
+                </p>
+            </div>
+
+            <form method="post" class="space-y-6">
+                <div>
+                    <label class="block text-xs font-semibold uppercase tracking-wider text-slate-400 dark:text-slate-500 mb-2">
+                        Password
+                    </label>
+                    <input 
+                        type="password" 
+                        name="password" 
+                        placeholder="••••••••" 
+                        required 
+                        autofocus
+                        class="w-full px-4 py-3 rounded-xl border border-slate-200 dark:border-slate-800 bg-white/50 dark:bg-slate-950/50 focus:bg-white dark:focus:bg-slate-950 text-slate-900 dark:text-slate-100 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-sky-500/50 focus:border-sky-500 transition-all"
+                    >
+                </div>
+
+                <button 
+                    type="submit" 
+                    class="w-full py-3 rounded-xl bg-gradient-to-r from-sky-500 to-indigo-600 hover:from-sky-600 hover:to-indigo-700 text-white font-semibold shadow-lg hover:shadow-sky-500/20 active:scale-[0.98] transition-all cursor-pointer"
+                >
+                    Unlock Dashboard
+                </button>
+            </form>
+
+            {% if error %}
+                <div class="mt-6 p-3 rounded-xl bg-red-500/10 border border-red-500/20 text-red-500 text-sm text-center">
+                    {{ error }}
+                </div>
+            {% endif %}
+        </div>
     </div>
+
+    <script>
+        const htmlElement = document.documentElement;
+        function toggleTheme() {
+            if (htmlElement.classList.contains('dark')) {
+                htmlElement.classList.remove('dark');
+                localStorage.setItem('theme', 'light');
+            } else {
+                htmlElement.classList.add('dark');
+                localStorage.setItem('theme', 'dark');
+            }
+            updateThemeIcon();
+        }
+
+        function updateThemeIcon() {
+            const themeIcon = document.getElementById('themeIcon');
+            if (htmlElement.classList.contains('dark')) {
+                themeIcon.innerHTML = `
+                    <svg class="w-5 h-5 text-amber-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364-6.364l-.707.707M6.343 17.657l-.707.707m0-12.728l.707.707m12.728 12.728l.707.707M12 8a4 4 0 100 8 4 4 0 000-8z"/>
+                    </svg>
+                `;
+            } else {
+                themeIcon.innerHTML = `
+                    <svg class="w-5 h-5 text-indigo-500 dark:text-indigo-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z"/>
+                    </svg>
+                `;
+            }
+        }
+        updateThemeIcon();
+    </script>
 </body>
 </html>

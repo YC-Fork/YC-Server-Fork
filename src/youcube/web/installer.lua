@@ -92,3 +92,18 @@ if input and (input:lower() == "y" or input:lower() == "yes") then
         printError("Failed to create /startup.lua: " .. (err or "unknown error"))
     end
 end
+
+write("Enter a nickname for this PC (optional): ")
+local nickname = read()
+if nickname and nickname ~= "" then
+    local file, err = fs.open("/youcube_nickname.txt", "w")
+    if file then
+        file.write(nickname)
+        file.close()
+        term.setTextColor(colors.lime)
+        print("Nickname saved: " .. nickname)
+        term.setTextColor(colors.white)
+    else
+        printError("Failed to save nickname: " .. (err or "unknown error"))
+    end
+end

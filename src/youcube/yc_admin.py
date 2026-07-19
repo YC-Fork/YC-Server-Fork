@@ -86,6 +86,7 @@ def get_formatted_clients(client_state) -> list:
                 "url": state.get("url", ""),
                 "play_duration": play_duration,
                 "conn_duration": conn_duration,
+                "nickname": state.get("nickname", ""),
                 "is_live": state.get("is_live", False)
             })
     return clients
@@ -191,3 +192,113 @@ async def kick_all(request: Request):
         kick_generation.value += 1
     prefix = request.app.blueprints["admin"].url_prefix
     return response.redirect(prefix)
+
+@admin_bp.route("/play/<client_id>", methods=["POST", "GET"])
+@login_required
+async def play_to_client(request: Request, client_id: str):
+    """Queues a song for a specific client and notifies them if they are idle."""
+    url = request.args.get("url") or request.form.get("url")
+    no_video = (request.args.get("no_video") == "true") or (request.form.get("no_video") == "true")
+    if url:
+        queues = request.app.shared_ctx.client_queues
+        if queues is not None:
+            client_queue = list(queues.get(client_id, []))
+            client_queue.append((url, no_video))
+            queues[client_id] = client_queue
+            
+            from yc_logging import logger
+            logger.info("Queued play command for client %s: %s (no_video=%s)", client_id, url, no_video)
+            
+            # If the client is idle, it will retrieve it via the 2-second polling loop
+            pass
+
+    prefix = request.app.blueprints["admin"].url_prefix
+    return response.redirect(prefix)
+
+@admin_bp.route("/stop/<client_id>")
+@login_required
+async def stop_client(request: Request, client_id: str):
+    """Sends a stop command to a specific client by setting a shared stop signal."""
+    stop_signals = request.app.shared_ctx.stop_signals
+    if stop_signals is not None:
+        stop_signals[client_id] = True
+        from yc_logging import logger
+        logger.info("Set stop signal for client %s", client_id)
+    if request.headers.get("accept") == "application/json" or request.args.get("json") == "true":
+        return response.json({"status": "success"})
+    prefix = request.app.blueprints["admin"].url_prefix
+    return response.redirect(prefix)
+
+@admin_bp.route("/skip/<client_id>")
+@login_required
+async def skip_client(request: Request, client_id: str):
+    """Sends a skip command to a specific client."""
+    skip_signals = getattr(request.app.shared_ctx, "skip_signals", None)
+    if skip_signals is not None:
+        skip_signals[client_id] = True
+        from yc_logging import logger
+        logger.info("Set skip signal for client %s", client_id)
+    if request.headers.get("accept") == "application/json" or request.args.get("json") == "true":
+        return response.json({"status": "success"})
+    prefix = request.app.blueprints["admin"].url_prefix
+    return response.redirect(prefix)
+
+@admin_bp.route("/queue/<client_id>")
+@login_required
+async def get_client_queue(request: Request, client_id: str):
+    """Returns the current queue of media items for a specific client as JSON."""
+    queues = request.app.shared_ctx.client_queues
+    client_queue = []
+    if queues is not None and client_id in queues:
+        raw_queue = queues[client_id]
+        for i, item in enumerate(raw_queue):
+            if isinstance(item, (tuple, list)):
+                url, no_video = item[0], item[1]
+            else:
+                url, no_video = item, False
+            client_queue.append({"index": i, "url": url, "no_video": no_video})
+    return response.json(client_queue)
+
+@admin_bp.route("/queue/<client_id>/delete/<index:int>", methods=["POST", "GET"])
+@login_required
+async def delete_queue_item(request: Request, client_id: str, index: int):
+    """Deletes an item from the client's queue by its index."""
+    queues = request.app.shared_ctx.client_queues
+    if queues is not None and client_id in queues:
+        client_queue = list(queues[client_id])
+        if 0 <= index < len(client_queue):
+            client_queue.pop(index)
+            queues[client_id] = client_queue
+            
+    if request.headers.get("accept") == "application/json" or request.args.get("json") == "true":
+        return response.json({"status": "success"})
+        
+    prefix = request.app.blueprints["admin"].url_prefix
+    return response.redirect(prefix)
+
+
+@admin_bp.route("/volume/<client_id>", methods=["POST", "GET"])
+@login_required
+async def set_client_volume(request: Request, client_id: str):
+    """Sets the volume for a specific client (0.0 – 3.0)."""
+    volume = request.args.get("volume") or (request.json or {}).get("volume")
+    if volume is None:
+        return response.json({"status": "error", "message": "volume required"}, status=400)
+    try:
+        volume = float(volume)
+        volume = max(0.0, min(3.0, volume))
+    except (TypeError, ValueError):
+        return response.json({"status": "error", "message": "volume must be a number"}, status=400)
+
+    # Store in a shared volume_signals dict — picked up by get_chunk next request
+    volume_signals = getattr(request.app.shared_ctx, "volume_signals", None)
+    if volume_signals is not None:
+        volume_signals[client_id] = volume
+        from yc_logging import logger
+        logger.info("Set volume signal for client %s to %.2f", client_id, volume)
+
+    if request.headers.get("accept") == "application/json" or request.args.get("json") == "true":
+        return response.json({"status": "success", "volume": volume})
+    prefix = request.app.blueprints["admin"].url_prefix
+    return response.redirect(prefix)
+

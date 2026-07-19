@@ -489,6 +489,25 @@ class Actions:
 
     @staticmethod
     async def get_chunk(message: dict, ws: Websocket, request: Request):
+        # Check stop/skip signals first — most reliable delivery point
+        client_id = f"{id(ws):x}"
+        stop_signals = getattr(request.app.shared_ctx, "stop_signals", None)
+        if stop_signals is not None and client_id in stop_signals:
+            stop_signals.pop(client_id, None)
+            logger.info("get_chunk: Delivering stop to client %s", client_id)
+            return {"action": "stop"}
+        skip_signals = getattr(request.app.shared_ctx, "skip_signals", None)
+        if skip_signals is not None and client_id in skip_signals:
+            skip_signals.pop(client_id, None)
+            logger.info("get_chunk: Delivering skip to client %s", client_id)
+            return {"action": "skip"}
+        # Check volume signals — deliver before next chunk
+        volume_signals = getattr(request.app.shared_ctx, "volume_signals", None)
+        if volume_signals is not None and client_id in volume_signals:
+            vol = volume_signals.pop(client_id)
+            logger.info("get_chunk: Delivering set_volume %.2f to client %s", vol, client_id)
+            return {"action": "set_volume", "volume": vol}
+
         # get "chunkindex"
         chunkindex = message.get("chunkindex")
         if error := assert_resp("chunkindex", chunkindex, int):
@@ -543,7 +562,6 @@ class Actions:
             
             # Update status to Playing/Streaming on second chunk (index 1)
             if chunkindex == 1:
-                client_id = f"{id(ws):x}"
                 client_state = get_shared_client_state(request.app)
                 if client_state:
                     state = client_state.get(client_id) or {}
@@ -562,6 +580,17 @@ class Actions:
 
     @staticmethod
     async def get_vid(message: dict, ws: Websocket, request: Request):
+        # Check stop/skip signals first
+        client_id = f"{id(ws):x}"
+        stop_signals = getattr(request.app.shared_ctx, "stop_signals", None)
+        if stop_signals is not None and client_id in stop_signals:
+            stop_signals.pop(client_id, None)
+            return {"action": "stop"}
+        skip_signals = getattr(request.app.shared_ctx, "skip_signals", None)
+        if skip_signals is not None and client_id in skip_signals:
+            skip_signals.pop(client_id, None)
+            return {"action": "skip"}
+
         # get "line"
         tracker = message.get("tracker")
         if error := assert_resp("tracker", tracker, int):
@@ -607,9 +636,10 @@ class Actions:
         return {"action": "error", "message": "You dare not use special Characters"}
 
     @staticmethod
-    async def handshake(message: dict, ws: Websocket, _request: Request):
+    async def handshake(message: dict, ws: Websocket, request: Request):
         client_id = f"{id(ws):x}"
         client_version = message.get("client_version")
+        nickname = message.get("nickname") or ""
         if not client_version:
             return {
                 "action": "error",
@@ -620,6 +650,11 @@ class Actions:
                 "action": "error",
                 "message": "Client version mismatch",
             }
+        client_state = get_shared_client_state(request.app)
+        if client_state and client_id in client_state:
+            state = client_state[client_id]
+            state["nickname"] = nickname
+            client_state[client_id] = state
         return {
             "action": "handshake",
             "server": {"version": VERSION},
@@ -627,6 +662,48 @@ class Actions:
             "client_id": client_id,
             "capabilities": {"video": ["32vid"], "audio": ["dfpwm"]},
         }
+    @staticmethod
+    async def get_queued_media(message: dict, ws: Websocket, request: Request):
+        client_id = f"{id(ws):x}"
+        queues = get_shared_client_queues(request.app)
+        url = None
+        no_video = False
+        if queues is not None and client_id in queues:
+            client_queue = list(queues[client_id])
+            if client_queue:
+                item = client_queue.pop(0)
+                if isinstance(item, (tuple, list)):
+                    url, no_video = item[0], item[1]
+                else:
+                    url = item
+                queues[client_id] = client_queue
+        if url:
+            logger.info("Client %s retrieved queued play command: %s (no_video=%s)", client_id, url, no_video)
+        return {
+            "action": "play",
+            "url": url,
+            "no_video": no_video
+        }
+
+    @staticmethod
+    async def set_volume(message: dict, ws: Websocket, request: Request):
+        """Stores a volume command for a client and returns it immediately."""
+        volume = message.get("volume")
+        if volume is None:
+            return {"action": "error", "message": "volume required"}
+        try:
+            volume = float(volume)
+        except (TypeError, ValueError):
+            return {"action": "error", "message": "volume must be a number"}
+        volume = max(0.0, min(3.0, volume))
+        client_id = f"{id(ws):x}"
+        client_state = get_shared_client_state(request.app)
+        if client_state and client_id in client_state:
+            state = client_state[client_id]
+            state["volume"] = volume
+            client_state[client_id] = state
+        logger.info("Set volume for client %s to %.2f", client_id, volume)
+        return {"action": "set_volume", "volume": volume}
 
     # pylint: enable=missing-function-docstring
 
@@ -665,7 +742,8 @@ if not url_prefix.startswith("/"):
 
 if admin_config.get("enabled", False):
     Extend(app, config={"templating": {"path_to_templates": join(dirname(abspath(__file__)), 'web')}})
-    app.blueprint(admin_bp, url_prefix=url_prefix)
+    admin_bp.url_prefix = url_prefix
+    app.blueprint(admin_bp)
 else:
     from sanic.response import html
     @app.route(url_prefix)
@@ -711,6 +789,13 @@ def get_shared_client_state(app: Sanic):
     if not hasattr(app.shared_ctx, "client_state"):
         return None
     return app.shared_ctx.client_state
+
+
+def get_shared_client_queues(app: Sanic):
+    """Returns shared client queues map (main process creates it)."""
+    if not hasattr(app.shared_ctx, "client_queues"):
+        return None
+    return app.shared_ctx.client_queues
 
 
 def get_shared_kick_generation(app: Sanic):
@@ -1061,7 +1146,12 @@ def print_startup_banner(admin_enabled: bool):
         
     # Admin Panel
     if admin_enabled:
-        components.append(("Admin Panel", "Enabled (/admin)", Foreground.GREEN))
+        server_settings = config.get("server_settings", {}) if isinstance(config, dict) else {}
+        admin_config = server_settings.get("admin_panel_web", {})
+        banner_prefix = admin_config.get("url_prefix") or "/admin"
+        if not banner_prefix.startswith("/"):
+            banner_prefix = "/" + banner_prefix
+        components.append(("Admin Panel", f"Enabled ({banner_prefix})", Foreground.GREEN))
     else:
         components.append(("Admin Panel", "Disabled", Foreground.RED))
         
@@ -1129,6 +1219,62 @@ def print_startup_banner(admin_enabled: bool):
             
     logger.info(border)
 
+def stop_signal_watcher(app: Sanic) -> None:
+    from time import sleep
+    from yc_logging import logger
+    while True:
+        sleep(0.2)
+        stop_signals = getattr(app.shared_ctx, "stop_signals", None)
+        if stop_signals is not None:
+            ws_by_id = getattr(app.ctx, "ws_by_id", None)
+            if ws_by_id:
+                for client_id in list(stop_signals.keys()):
+                    if client_id in ws_by_id:
+                        logger.info("stop_signal_watcher: Found client %s. Sending stop command...", client_id)
+                        ws = ws_by_id[client_id]
+                        try:
+                            from asyncio import run_coroutine_threadsafe
+                            from json import dumps
+                            loop = app.ctx.main_loop
+                            run_coroutine_threadsafe(
+                                ws.send(dumps({"action": "stop"})),
+                                loop
+                            )
+                            stop_signals.pop(client_id, None)
+                            logger.info("stop_signal_watcher: Stop command sent to client %s", client_id)
+                        except Exception as e:
+                            logger.error("stop_signal_watcher: Failed to send stop to client %s: %s", client_id, e)
+                    else:
+                        # Client not in this worker's map, but we don't pop it yet 
+                        # so that the worker owning the connection can handle it.
+                        pass
+
+def skip_signal_watcher(app: Sanic) -> None:
+    from time import sleep
+    from yc_logging import logger
+    while True:
+        sleep(0.2)
+        skip_signals = getattr(app.shared_ctx, "skip_signals", None)
+        if skip_signals is not None:
+            ws_by_id = getattr(app.ctx, "ws_by_id", None)
+            if ws_by_id:
+                for client_id in list(skip_signals.keys()):
+                    if client_id in ws_by_id:
+                        logger.info("skip_signal_watcher: Found client %s. Sending skip command...", client_id)
+                        ws = ws_by_id[client_id]
+                        try:
+                            from asyncio import run_coroutine_threadsafe
+                            from json import dumps
+                            loop = app.ctx.main_loop
+                            run_coroutine_threadsafe(
+                                ws.send(dumps({"action": "skip"})),
+                                loop
+                            )
+                            skip_signals.pop(client_id, None)
+                            logger.info("skip_signal_watcher: Skip command sent to client %s", client_id)
+                        except Exception as e:
+                            logger.error("skip_signal_watcher: Failed to send skip to client %s: %s", client_id, e)
+
 # pylint: disable=redefined-outer-name
 @app.main_process_ready
 async def ready(app: Sanic):
@@ -1153,6 +1299,10 @@ async def main_start(app: Sanic):
     app.shared_ctx.client_state = manager.dict()
     app.shared_ctx.kick_generation = manager.Value("i", 0)
     app.shared_ctx.kick_targets = manager.dict()
+    app.shared_ctx.client_queues = manager.dict()
+    app.shared_ctx.stop_signals = manager.dict()
+    app.shared_ctx.skip_signals = manager.dict()
+    app.shared_ctx.volume_signals = manager.dict()
     config = load_config()
     debug_settings = config.get("debug_settings", {}) if isinstance(config, dict) else {}
     debug_default = bool(debug_settings.get("debug_logging_default", False))
@@ -1193,6 +1343,8 @@ async def before_start(app: Sanic):
     Thread(target=kick_watcher, args=(app,), daemon=True).start()
     Thread(target=kick_target_watcher, args=(app,), daemon=True).start()
     Thread(target=debug_watcher, args=(app,), daemon=True).start()
+    Thread(target=stop_signal_watcher, args=(app,), daemon=True).start()
+    Thread(target=skip_signal_watcher, args=(app,), daemon=True).start()
 
 
 @app.route("/installer.lua", methods=["GET"])
@@ -1290,7 +1442,8 @@ async def wshandler(request: Request, ws: Websocket):
             "ip": request.client_ip,
             "listening_since": None,
             "connected_since": monotonic(),
-            "status": "Idle"
+            "status": "Idle",
+            "nickname": ""
         }
 
     try:
