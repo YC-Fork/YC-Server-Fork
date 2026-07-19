@@ -87,7 +87,8 @@ def get_formatted_clients(client_state) -> list:
                 "play_duration": play_duration,
                 "conn_duration": conn_duration,
                 "nickname": state.get("nickname", ""),
-                "is_live": state.get("is_live", False)
+                "is_live": state.get("is_live", False),
+                "volume": state.get("volume", 3.0)
             })
     return clients
 
@@ -296,6 +297,13 @@ async def set_client_volume(request: Request, client_id: str):
         volume_signals[client_id] = volume
         from yc_logging import logger
         logger.info("Set volume signal for client %s to %.2f", client_id, volume)
+
+    # Immediately update client_state so the dashboard stays in sync
+    client_state = getattr(request.app.shared_ctx, "client_state", None)
+    if client_state and client_id in client_state:
+        state = client_state[client_id]
+        state["volume"] = volume
+        client_state[client_id] = state
 
     if request.headers.get("accept") == "application/json" or request.args.get("json") == "true":
         return response.json({"status": "success", "volume": volume})

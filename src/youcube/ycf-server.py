@@ -501,12 +501,18 @@ class Actions:
             skip_signals.pop(client_id, None)
             logger.info("get_chunk: Delivering skip to client %s", client_id)
             return {"action": "skip"}
-        # Check volume signals — deliver before next chunk
+        
+        # Check volume signals — check if there is an update
+        vol_update = None
         volume_signals = getattr(request.app.shared_ctx, "volume_signals", None)
         if volume_signals is not None and client_id in volume_signals:
-            vol = volume_signals.pop(client_id)
-            logger.info("get_chunk: Delivering set_volume %.2f to client %s", vol, client_id)
-            return {"action": "set_volume", "volume": vol}
+            vol_update = volume_signals.pop(client_id)
+            client_state = get_shared_client_state(request.app)
+            if client_state and client_id in client_state:
+                state = client_state[client_id]
+                state["volume"] = vol_update
+                client_state[client_id] = state
+            logger.info("get_chunk: Attaching volume update %.2f to client %s", vol_update, client_id)
 
         # get "chunkindex"
         chunkindex = message.get("chunkindex")
@@ -574,7 +580,10 @@ class Actions:
                         })
                         client_state[client_id] = state
 
-            return {"action": "chunk", "chunk": b64encode(chunk).decode("ascii")}
+            resp_data = {"action": "chunk", "chunk": b64encode(chunk).decode("ascii")}
+            if vol_update is not None:
+                resp_data["volume"] = vol_update
+            return resp_data
         logger.warning("User tried to use special Characters")
         return {"action": "error", "message": "You dare not use special Characters"}
 
@@ -590,6 +599,18 @@ class Actions:
         if skip_signals is not None and client_id in skip_signals:
             skip_signals.pop(client_id, None)
             return {"action": "skip"}
+
+        # Check volume signals — check if there is an update
+        vol_update = None
+        volume_signals = getattr(request.app.shared_ctx, "volume_signals", None)
+        if volume_signals is not None and client_id in volume_signals:
+            vol_update = volume_signals.pop(client_id)
+            client_state = get_shared_client_state(request.app)
+            if client_state and client_id in client_state:
+                state = client_state[client_id]
+                state["volume"] = vol_update
+                client_state[client_id] = state
+            logger.info("get_vid: Attaching volume update %.2f to client %s", vol_update, client_id)
 
         # get "line"
         tracker = message.get("tracker")
@@ -628,10 +649,13 @@ class Actions:
 
             request.app.shared_ctx.data[file_name] = datetime.now()
 
-            return {
+            resp_data = {
                 "action": "vid",
                 "lines": await get_vid(file, tracker, MAX_WS_PAYLOAD_BYTES),
             }
+            if vol_update is not None:
+                resp_data["volume"] = vol_update
+            return resp_data
 
         return {"action": "error", "message": "You dare not use special Characters"}
 
@@ -654,6 +678,12 @@ class Actions:
         if client_state and client_id in client_state:
             state = client_state[client_id]
             state["nickname"] = nickname
+            volume = message.get("volume")
+            if volume is not None:
+                try:
+                    state["volume"] = float(volume)
+                except (TypeError, ValueError):
+                    pass
             client_state[client_id] = state
         return {
             "action": "handshake",
@@ -1443,7 +1473,8 @@ async def wshandler(request: Request, ws: Websocket):
             "listening_since": None,
             "connected_since": monotonic(),
             "status": "Idle",
-            "nickname": ""
+            "nickname": "",
+            "volume": 3.0
         }
 
     try:
@@ -1451,7 +1482,8 @@ async def wshandler(request: Request, ws: Websocket):
             message = await ws.recv()
             if message is None:
                 break
-            logger.debug("%sMessage: %s", prefix, message)
+            if "get_queued_media" not in message:
+                logger.debug("%sMessage: %s", prefix, message)
 
             try:
                 message: dict = load_json(message)
