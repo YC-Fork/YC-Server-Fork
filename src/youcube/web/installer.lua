@@ -18,6 +18,7 @@ local files = {
     ["./Yc-Fork-Client-Libs/semver.lua"] = BASE_URL .. "Yc-Fork-Client-Libs/semver.lua",
     ["./Yc-Fork-Client-Libs/argparse.lua"] = BASE_URL .. "Yc-Fork-Client-Libs/argparse.lua",
     ["./Yc-Fork-Client-Libs/string_pack.lua"] = BASE_URL .. "Yc-Fork-Client-Libs/string_pack.lua",
+    ["./Yc-Fork-Client-Libs/ui.lua"] = BASE_URL .. "Yc-Fork-Client-Libs/ui.lua",
     ["./Yc-Fork-Client-Libs/uninstall.lua"] = BASE_URL .. "Yc-Fork-Client-Libs/uninstall.lua",
 }
 
@@ -95,15 +96,19 @@ end
 
 write("Enter a nickname for this PC (optional): ")
 local nickname = read()
-if nickname and nickname ~= "" then
-    local file, err = fs.open("/youcube_nickname.txt", "w")
-    if file then
-        file.write(nickname)
-        file.close()
+local settings_data = {
+    nickname = nickname or "",
+    queue_via_dashboard = true
+}
+local file, err = fs.open("/ycfork_settings.txt", "w")
+if file then
+    file.write(textutils.serialiseJSON(settings_data))
+    file.close()
+    if nickname and nickname ~= "" then
         term.setTextColor(colors.lime)
         print("Nickname saved: " .. nickname)
         term.setTextColor(colors.white)
-    else
-        printError("Failed to save nickname: " .. (err or "unknown error"))
     end
+else
+    printError("Failed to save settings: " .. (err or "unknown error"))
 end

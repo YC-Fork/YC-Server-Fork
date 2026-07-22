@@ -3,113 +3,255 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>YC-Fork Server</title>
+    <title>YC-Fork Server — ComputerCraft Media Engine</title>
+    <!-- Tailwind v4 Standalone Browser Script -->
+    <script src="https://unpkg.com/@tailwindcss/browser@4"></script>
+    <style type="text/tailwindcss">
+        @variant dark (.dark &);
+    </style>
+    <script>
+        // Init theme immediately to prevent flashing
+        const savedTheme = localStorage.getItem('theme');
+        const systemPrefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+        if (savedTheme === 'dark' || (!savedTheme && systemPrefersDark)) {
+            document.documentElement.classList.add('dark');
+        } else {
+            document.documentElement.classList.remove('dark');
+        }
+    </script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Outfit:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
     <style>
         body {
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-            background-color: #1a1a1a;
-            color: #e0e0e0;
-            margin: 0;
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            min-height: 100vh;
-            text-align: center;
+            font-family: 'Outfit', sans-serif;
         }
-        .container {
-            max-width: 800px;
-            padding: 2rem;
-        }
-        h1 {
-            color: #76d7c4;
-            font-size: 2.5rem;
-        }
-        p {
-            font-size: 1.2rem;
-            color: #b3b3b3;
-        }
-        .code-container {
-            background-color: #2c2c2c;
-            border-radius: 8px;
-            padding: 1.5rem;
-            margin-top: 2rem;
-            text-align: left;
-            position: relative;
-        }
-        pre {
-            white-space: pre-wrap;
-            word-wrap: break-word;
-            margin: 0;
-        }
-        code {
-            font-family: "Fira Code", "Courier New", monospace;
-            font-size: 0.9rem;
-            color: #f0f0f0;
-        }
-        .copy-button {
-            position: absolute;
-            top: 1rem;
-            right: 1rem;
-            background-color: #4CAF50;
-            color: white;
-            border: none;
-            padding: 0.5rem 1rem;
-            border-radius: 5px;
-            cursor: pointer;
-            font-weight: bold;
-            transition: background-color 0.2s;
-        }
-        .copy-button:hover {
-            background-color: #45a049;
-        }
-        .copy-button:active {
-            background-color: #3e8e41;
-        }
-        .footer {
-            margin-top: 2rem;
-            font-size: 0.9rem;
-            color: #888;
-        }
-        .footer a {
-            color: #76d7c4;
-            text-decoration: none;
-        }
-        .footer a:hover {
-            text-decoration: underline;
+        .font-mono {
+            font-family: 'JetBrains Mono', monospace;
         }
     </style>
 </head>
-<body>
-    <div class="container">
-        <h1>YC-Server-Fork is Running</h1>
-        <p>Your server is running correctly. Use the installer below on your ComputerCraft computer.</p>
+<body class="transition-colors duration-300 bg-slate-50 text-slate-900 dark:bg-slate-950 dark:text-slate-100 min-h-screen relative overflow-x-hidden flex flex-col justify-between">
+    
+    <!-- Background Glow Accents -->
+    <div class="absolute -top-40 left-1/2 -translate-x-1/2 w-[600px] h-[600px] bg-gradient-to-tr from-cyan-500/10 via-purple-500/10 to-indigo-500/10 dark:from-cyan-500/20 dark:via-purple-500/15 dark:to-indigo-500/20 rounded-full blur-3xl pointer-events-none"></div>
 
-        <div class="code-container">
-            <button class="copy-button" onclick="copyInstaller()">Copy</button>
-            <pre><code id="installerCode"></code></pre>
+    <!-- Toast Notification Container -->
+    <div id="toastContainer" class="fixed top-5 right-5 z-50 flex flex-col gap-2 pointer-events-none"></div>
+
+    <!-- Navigation Header -->
+    <header class="w-full max-w-6xl mx-auto px-6 py-6 flex items-center justify-between z-10">
+        <!-- Logo & Branding -->
+        <div class="flex items-center gap-3">
+            <div class="w-10 h-10 rounded-xl bg-gradient-to-tr from-cyan-500 to-indigo-600 flex items-center justify-center text-white font-black text-xl shadow-lg shadow-cyan-500/20">
+                ♫
+            </div>
+            <div>
+                <div class="flex items-center gap-2">
+                    <h1 class="font-extrabold text-lg tracking-tight leading-none bg-gradient-to-r from-slate-900 via-slate-800 to-slate-700 dark:from-white dark:via-slate-200 dark:to-slate-400 bg-clip-text text-transparent">
+                        YC-Fork Server
+                    </h1>
+                    <span class="px-2 py-0.5 rounded-md bg-cyan-500/10 text-cyan-500 border border-cyan-500/20 text-[11px] font-mono font-bold">v2.00.001</span>
+                </div>
+                <p class="text-xs text-slate-500 dark:text-slate-400 font-medium mt-0.5">CC:Tweaked Media Engine</p>
+            </div>
         </div>
 
-        <div class="footer">
-            <p>See the <a href="https://github.com/YC-Fork/YC-Client-Fork" target="_blank">Client GitHub Repository</a> for more information.</p>
-        </div>
-    </div>
+        <!-- Right Header Items -->
+        <div class="flex items-center gap-3">
+            <!-- Server Status Badge -->
+            <div class="hidden sm:flex items-center gap-2 px-3 py-1.5 rounded-full bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20 text-xs font-semibold">
+                <span class="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+                Server Online
+            </div>
 
+            <!-- Theme Toggle Button -->
+            <button onclick="toggleTheme()" class="p-2.5 rounded-xl border border-slate-200/80 dark:border-slate-800 bg-white/70 dark:bg-slate-900/60 backdrop-blur-md text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white transition-all shadow-sm cursor-pointer">
+                <!-- Sun Icon -->
+                <svg class="w-4 h-4 hidden dark:block" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z"></path></svg>
+                <!-- Moon Icon -->
+                <svg class="w-4 h-4 block dark:hidden" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z"></path></svg>
+            </button>
+
+            <!-- Dashboard Direct Link -->
+            <a href="/admin" class="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-white font-semibold text-xs shadow-lg shadow-cyan-500/25 transition-all hover:scale-[1.02] active:scale-[0.98]">
+                <span>Admin Dashboard</span>
+                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14 5l7 7m0 0l-7 7m7-7H3"></path></svg>
+            </a>
+        </div>
+    </header>
+
+    <!-- Main Content Body -->
+    <main class="w-full max-w-4xl mx-auto px-6 py-12 flex flex-col items-center text-center z-10">
+        
+        <!-- Hero Tag Badge -->
+        <div class="inline-flex items-center gap-2 px-4 py-1.5 rounded-full bg-cyan-500/10 text-cyan-600 dark:text-cyan-400 border border-cyan-500/20 text-xs font-semibold mb-6">
+            <span>✨ ComputerCraft Audio & Video Engine</span>
+        </div>
+
+        <!-- Main Title -->
+        <h2 class="text-4xl sm:text-6xl font-black tracking-tight max-w-3xl leading-[1.1] mb-6">
+            Stream Music & Video to <span class="bg-gradient-to-r from-cyan-500 via-teal-400 to-indigo-500 bg-clip-text text-transparent">Minecraft Computers</span>
+        </h2>
+
+        <!-- Subtitle -->
+        <p class="text-base sm:text-lg text-slate-600 dark:text-slate-400 max-w-xl mb-10 leading-relaxed">
+            High quality audio, video streaming, Spotify, YouTube and Live Web Radio for ComputerCraft & CC:Tweaked.
+        </p>
+
+        <!-- Terminal Installer Card -->
+        <div class="w-full max-w-2xl bg-slate-900 text-slate-100 rounded-2xl shadow-2xl border border-slate-800 overflow-hidden text-left mb-16">
+            <!-- Terminal Header Bar -->
+            <div class="px-4 py-3 bg-slate-950/80 border-b border-slate-800 flex items-center justify-between">
+                <div class="flex items-center gap-2">
+                    <span class="w-3 h-3 rounded-full bg-rose-500/80"></span>
+                    <span class="w-3 h-3 rounded-full bg-amber-500/80"></span>
+                    <span class="w-3 h-3 rounded-full bg-emerald-500/80"></span>
+                    <span class="ml-2 text-xs font-mono text-slate-400">CraftOS Terminal — Quick Install</span>
+                </div>
+                <span class="text-[10px] font-mono uppercase tracking-wider text-cyan-400 bg-cyan-500/10 px-2 py-0.5 rounded border border-cyan-500/20">Installer</span>
+            </div>
+
+            <!-- Terminal Code Body -->
+            <div class="p-6 relative font-mono text-sm sm:text-base flex items-center justify-between gap-4">
+                <div class="overflow-x-auto">
+                    <span class="text-emerald-400 select-none">&gt; </span>
+                    <span id="installerCode" class="text-slate-100 font-semibold tracking-wide">wget run <span class="text-cyan-400" id="installerUrl">http://.../installer.lua</span></span>
+                </div>
+
+                <!-- Copy Command Button -->
+                <button onclick="copyInstaller()" id="copyBtn" class="shrink-0 px-4 py-2.5 rounded-xl bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-bold text-xs flex items-center gap-2 transition-all cursor-pointer shadow-md shadow-cyan-500/20 active:scale-95">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"></path></svg>
+                    <span id="copyBtnText">Copy Command</span>
+                </button>
+            </div>
+        </div>
+
+        <!-- Features Grid -->
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-4 w-full text-left">
+            
+            <!-- Feature 1 -->
+            <div class="p-6 rounded-2xl bg-white/60 dark:bg-slate-900/50 backdrop-blur-md border border-slate-200/60 dark:border-slate-800/40 shadow-sm hover:shadow-md transition-all">
+                <div class="w-10 h-10 rounded-xl bg-cyan-500/10 text-cyan-500 flex items-center justify-center text-lg mb-4">
+                    ♫
+                </div>
+                <h3 class="font-bold text-base mb-1">Stereo Audio & Speaker Sync</h3>
+                <p class="text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
+                    Play high-fidelity DFPWM audio synced across multiple speakers in Minecraft with live remote volume adjustment.
+                </p>
+            </div>
+
+            <!-- Feature 2 -->
+            <div class="p-6 rounded-2xl bg-white/60 dark:bg-slate-900/50 backdrop-blur-md border border-slate-200/60 dark:border-slate-800/40 shadow-sm hover:shadow-md transition-all">
+                <div class="w-10 h-10 rounded-xl bg-purple-500/10 text-purple-500 flex items-center justify-center text-lg mb-4">
+                    📺
+                </div>
+                <h3 class="font-bold text-base mb-1">CraftOS Fullscreen Video</h3>
+                <p class="text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
+                    Stream 30 FPS video directly to computer terminals with clean, un-obscured fullscreen playback.
+                </p>
+            </div>
+
+            <!-- Feature 3 -->
+            <div class="p-6 rounded-2xl bg-white/60 dark:bg-slate-900/50 backdrop-blur-md border border-slate-200/60 dark:border-slate-800/40 shadow-sm hover:shadow-md transition-all">
+                <div class="w-10 h-10 rounded-xl bg-amber-500/10 text-amber-500 flex items-center justify-center text-lg mb-4">
+                    📻
+                </div>
+                <h3 class="font-bold text-base mb-1">YouTube, Spotify & Web Radio</h3>
+                <p class="text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
+                    Queue YouTube videos, Spotify tracks, and live Icecast/Web Radio streams seamlessly from one platform.
+                </p>
+            </div>
+
+            <!-- Feature 4 -->
+            <div class="p-6 rounded-2xl bg-white/60 dark:bg-slate-900/50 backdrop-blur-md border border-slate-200/60 dark:border-slate-800/40 shadow-sm hover:shadow-md transition-all">
+                <div class="w-10 h-10 rounded-xl bg-emerald-500/10 text-emerald-500 flex items-center justify-center text-lg mb-4">
+                    ⚡
+                </div>
+                <h3 class="font-bold text-base mb-1">Instant Dashboard Control</h3>
+                <p class="text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
+                    Sub-10ms direct WebSocket skip, stop, and volume controls with live media type status reporting.
+                </p>
+            </div>
+
+        </div>
+
+    </main>
+
+    <!-- Footer -->
+    <footer class="w-full max-w-6xl mx-auto px-6 py-6 border-t border-slate-200/60 dark:border-slate-800/40 flex flex-col sm:flex-row items-center justify-between text-xs text-slate-500 dark:text-slate-400 gap-4 z-10">
+        <div>
+            <span>YC-Fork Server v2.00.001 &copy; 2026. Powered by Mentimjojo & Mr.Wasabi.</span>
+        </div>
+        <div class="flex items-center gap-4">
+            <a href="https://github.com/YC-Fork/YC-Client-Fork" target="_blank" class="hover:text-cyan-500 transition-colors">Client GitHub</a>
+            <span>&bull;</span>
+            <a href="/admin" class="hover:text-cyan-500 transition-colors">Admin Dashboard</a>
+        </div>
+    </footer>
+
+    <!-- Scripts -->
     <script>
-        const codeElement = document.getElementById('installerCode');
+        // Setup installer URL
         const installerUrl = `${window.location.origin}/installer.lua`;
-        codeElement.innerText = `wget run ${installerUrl}`;
+        document.getElementById('installerUrl').textContent = installerUrl;
 
+        // Copy installer command to clipboard
         function copyInstaller() {
-            const button = document.querySelector('.copy-button');
-            navigator.clipboard.writeText(codeElement.innerText).then(() => {
-                button.textContent = 'Copied!';
+            const commandText = `wget run ${installerUrl}`;
+            const btnText = document.getElementById('copyBtnText');
+            const btn = document.getElementById('copyBtn');
+
+            navigator.clipboard.writeText(commandText).then(() => {
+                btnText.textContent = 'Copied!';
+                btn.classList.remove('bg-cyan-500', 'hover:bg-cyan-400');
+                btn.classList.add('bg-emerald-500', 'text-white');
+                
+                showToast('Installer command copied to clipboard!');
+
                 setTimeout(() => {
-                    button.textContent = 'Copy';
+                    btnText.textContent = 'Copy Command';
+                    btn.classList.remove('bg-emerald-500', 'text-white');
+                    btn.classList.add('bg-cyan-500', 'hover:bg-cyan-400');
                 }, 2000);
-            }, (err) => {
+            }).catch(err => {
                 console.error('Failed to copy: ', err);
-                button.textContent = 'Failed!';
+                showToast('Failed to copy command', true);
             });
+        }
+
+        // Toast Notifications
+        function showToast(msg, isError = false) {
+            const container = document.getElementById('toastContainer');
+            const toast = document.createElement('div');
+            toast.className = `pointer-events-auto px-4 py-2.5 rounded-xl shadow-lg text-xs font-semibold flex items-center gap-2 transition-all transform translate-y-[-10px] opacity-0 ${
+                isError ? 'bg-rose-500 text-white' : 'bg-slate-900 dark:bg-white text-white dark:text-slate-900'
+            }`;
+            toast.innerHTML = `<span>${msg}</span>`;
+            container.appendChild(toast);
+
+            setTimeout(() => {
+                toast.classList.remove('translate-y-[-10px]', 'opacity-0');
+                toast.classList.add('translate-y-0', 'opacity-100');
+            }, 10);
+
+            setTimeout(() => {
+                toast.classList.remove('translate-y-0', 'opacity-100');
+                toast.classList.add('translate-y-[-10px]', 'opacity-0');
+                setTimeout(() => toast.remove(), 300);
+            }, 3000);
+        }
+
+        // Theme Toggle
+        function toggleTheme() {
+            const html = document.documentElement;
+            if (html.classList.contains('dark')) {
+                html.classList.remove('dark');
+                localStorage.setItem('theme', 'light');
+            } else {
+                html.classList.add('dark');
+                localStorage.setItem('theme', 'dark');
+            }
         }
     </script>
 </body>

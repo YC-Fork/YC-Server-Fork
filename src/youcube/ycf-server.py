@@ -72,6 +72,7 @@ from yc_utils import (
     load_config,
     VIDEO_FORMAT,
     VERSION,
+    is_compatible_version,
 )
 
 # one dfpwm chunk is 16 bits
@@ -480,8 +481,9 @@ class Actions:
                     "title": out.get("title"),
                     "is_live": False,
                     "url": url,
-                    "listening_since": monotonic(),
-                    "status": "Playing"
+                    "listening_since": None,
+                    "status": "Buffering",
+                    "duration": out.get("duration", 0)
                 }
             )
             client_state[client_id] = state
@@ -501,6 +503,11 @@ class Actions:
             skip_signals.pop(client_id, None)
             logger.info("get_chunk: Delivering skip to client %s", client_id)
             return {"action": "skip"}
+        restart_signals = getattr(request.app.shared_ctx, "restart_signals", None)
+        if restart_signals is not None and client_id in restart_signals:
+            restart_signals.pop(client_id, None)
+            logger.info("get_chunk: Delivering restart to client %s", client_id)
+            return {"action": "restart"}
         
         # Check volume signals — check if there is an update
         vol_update = None
@@ -566,8 +573,8 @@ class Actions:
                 request.app.shared_ctx.data[file_name] = datetime.now()
                 chunk = await getchunk(file, chunkindex)
             
-            # Update status to Playing/Streaming on second chunk (index 1)
-            if chunkindex == 1:
+            # Update status to Playing/Streaming on first chunk (index 0 or 1)
+            if chunkindex <= 1:
                 client_state = get_shared_client_state(request.app)
                 if client_state:
                     state = client_state.get(client_id) or {}
@@ -586,6 +593,36 @@ class Actions:
             return resp_data
         logger.warning("User tried to use special Characters")
         return {"action": "error", "message": "You dare not use special Characters"}
+
+    @staticmethod
+    async def idle(message: dict, ws: Websocket, request: Request):
+        client_id = f"{id(ws):x}"
+        client_state = get_shared_client_state(request.app)
+        if client_state and client_id in client_state:
+            state = client_state[client_id]
+            state.update({
+                "mode": "idle",
+                "status": "Idle",
+                "media_id": None,
+                "title": None,
+                "listening_since": None,
+                "duration": 0
+            })
+            client_state[client_id] = state
+            logger.info("Client %s reported idle state", client_id)
+        return {"action": "idle", "status": "success"}
+
+    @staticmethod
+    async def seek_notify(message: dict, ws: Websocket, request: Request):
+        client_id = f"{id(ws):x}"
+        timestamp = float(message.get("timestamp", 0))
+        client_state = get_shared_client_state(request.app)
+        if client_state and client_id in client_state:
+            state = client_state[client_id]
+            state["listening_since"] = monotonic() - max(0.0, timestamp)
+            client_state[client_id] = state
+            logger.info("Client %s reported seek to timestamp %.1fs", client_id, timestamp)
+        return {"action": "seek_notify", "status": "success"}
 
     @staticmethod
     async def get_vid(message: dict, ws: Websocket, request: Request):
@@ -669,10 +706,10 @@ class Actions:
                 "action": "error",
                 "message": "Client version required",
             }
-        if client_version != VERSION:
+        if not is_compatible_version(client_version, VERSION):
             return {
                 "action": "error",
-                "message": "Client version mismatch",
+                "message": f"Client version mismatch (Server: {VERSION}, Client: {client_version})",
             }
         client_state = get_shared_client_state(request.app)
         if client_state and client_id in client_state:
@@ -1188,6 +1225,14 @@ def print_startup_banner(admin_enabled: bool):
     # Commands
     components.append(("Commands", "Enabled", Foreground.GREEN))
 
+    # Debug Mode
+    debug_settings = config.get("debug_settings", {}) if isinstance(config, dict) else {}
+    debug_default = bool(debug_settings.get("debug_logging_default", False))
+    if debug_default:
+        components.append(("Debug Mode", "Enabled", Foreground.YELLOW))
+    else:
+        components.append(("Debug Mode", "Disabled", Foreground.RED))
+
     # Node.js Check
     path_settings = config.get("path_settings", {}) if isinstance(config, dict) else {}
     js_config = path_settings.get("js_runtimes", {}) if isinstance(path_settings, dict) else {}
@@ -1332,6 +1377,7 @@ async def main_start(app: Sanic):
     app.shared_ctx.client_queues = manager.dict()
     app.shared_ctx.stop_signals = manager.dict()
     app.shared_ctx.skip_signals = manager.dict()
+    app.shared_ctx.restart_signals = manager.dict()
     app.shared_ctx.volume_signals = manager.dict()
     config = load_config()
     debug_settings = config.get("debug_settings", {}) if isinstance(config, dict) else {}
@@ -1532,4 +1578,11 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except (KeyboardInterrupt, SystemExit, RuntimeError):
+        logger.info("Server Stopped.")
+        try:
+            sys.exit(0)
+        except SystemExit:
+            pass

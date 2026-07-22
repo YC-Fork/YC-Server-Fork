@@ -777,16 +777,11 @@ def download(
     out = {
         "action": "media",
         "id": media_id,
-        # "fulltitle": data.get("fulltitle"),
         "title": data.get("title"),
         "like_count": data.get("like_count"),
         "view_count": data.get("view_count"),
-        # "upload_date": data.get("upload_date"),
-        # "tags": data.get("tags"),
-        # "description": data.get("description"),
-        # "categories": data.get("categories"),
-        # "channel_name": data.get("channel"),
-        # "channel_id": data.get("channel_id")
+        "channel": data.get("channel") or data.get("uploader") or data.get("artist"),
+        "duration": data.get("duration"),
     }
 
     # Only return playlist_videos if there are videos in playlist_videos

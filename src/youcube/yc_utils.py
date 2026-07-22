@@ -15,7 +15,20 @@ from re import RegexFlag
 from re import compile as re_compile
 from typing import Tuple
 
-VERSION = "0.1.2"
+VERSION = "2.00.001"
+
+def is_compatible_version(v1: str, v2: str) -> bool:
+    """Checks if Major and Minor version numbers match between v1 and v2 (e.g. 2 and 00 for '2.00.001')."""
+    if not v1 or not v2:
+        return False
+    try:
+        p1 = [int(x) for x in str(v1).split(".")[:2]]
+        p2 = [int(x) for x in str(v2).split(".")[:2]]
+        if len(p1) == 2 and len(p2) == 2:
+            return p1[0] == p2[0] and p1[1] == p2[1]
+    except Exception:
+        pass
+    return v1 == v2
 
 def remove_whitespace(string: str) -> str:
     """

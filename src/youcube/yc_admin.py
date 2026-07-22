@@ -58,12 +58,40 @@ def format_duration(seconds: float) -> str:
         return f"{m}m {s}s"
     return f"{s}s"
 
-def get_formatted_clients(client_state) -> list:
-    """Helper to format the client state dictionary into a list."""
+def determine_media_type(state: dict) -> str:
+    """Derives media type: Video, Audio, Stream, Radio, or -."""
+    if not state or state.get("status") == "Idle" or state.get("mode") in ("idle", "unknown", None):
+        return "-"
+    is_live = state.get("is_live", False)
+    mode = state.get("mode", "")
+    title = (state.get("title") or "").lower()
+    url = (state.get("url") or "").lower()
+
+    if is_live:
+        if mode == "audio" or "radio" in title or "radio" in url or url.endswith(".pls") or url.endswith(".m3u"):
+            return "Radio"
+        return "Stream"
+    
+    if mode == "audio+video" or mode == "video":
+        return "Video"
+    
+    return "Audio"
+
+def get_formatted_clients(client_state, app=None) -> list:
+    """Helper to format the client state dictionary into a list and purge disconnected clients."""
     clients = []
     if client_state:
+        ws_by_id = None
+        if app:
+            ws_by_id = getattr(app.ctx, "ws_by_id", None) or getattr(app.shared_ctx, "ws_by_id", None)
+
         now = monotonic()
-        for client_id, state in client_state.items():
+        stale_keys = []
+        for client_id, state in list(client_state.items()):
+            if ws_by_id is not None and client_id not in ws_by_id:
+                stale_keys.append(client_id)
+                continue
+
             # Play Duration
             listening_since = state.get("listening_since")
             play_duration = "-"
@@ -76,10 +104,14 @@ def get_formatted_clients(client_state) -> list:
             if isinstance(connected_since, (int, float)):
                 conn_duration = format_duration(now - connected_since)
 
+            elapsed = (now - listening_since) if isinstance(listening_since, (int, float)) else 0.0
+            duration = state.get("duration", 0)
+
             clients.append({
                 "id": client_id,
                 "ip": state.get("ip", "-"),
                 "mode": state.get("mode", "unknown"),
+                "type": determine_media_type(state),
                 "status": state.get("status", "Idle"),
                 "media_id": state.get("media_id", "-"),
                 "title": state.get("title", "-"),
@@ -88,8 +120,14 @@ def get_formatted_clients(client_state) -> list:
                 "conn_duration": conn_duration,
                 "nickname": state.get("nickname", ""),
                 "is_live": state.get("is_live", False),
-                "volume": state.get("volume", 3.0)
+                "volume": state.get("volume", 3.0),
+                "duration": duration,
+                "elapsed": elapsed
             })
+
+        for k in stale_keys:
+            client_state.pop(k, None)
+
     return clients
 
 def fetch_latest_version():
@@ -149,7 +187,7 @@ async def logout(request: Request):
 async def dashboard(request: Request):
     """Renders the admin dashboard."""
     client_state = request.app.shared_ctx.client_state
-    clients = get_formatted_clients(client_state)
+    clients = get_formatted_clients(client_state, request.app)
     
     loop = get_event_loop()
     latest_version = await loop.run_in_executor(None, fetch_latest_version)
@@ -168,7 +206,7 @@ async def admin_feed(request: Request, ws: Websocket):
     try:
         while True:
             client_state = request.app.shared_ctx.client_state
-            clients = get_formatted_clients(client_state)
+            clients = get_formatted_clients(client_state, request.app)
             await ws.send(json.dumps(clients))
             await sleep(2)
     except WebsocketClosed:
@@ -219,12 +257,38 @@ async def play_to_client(request: Request, client_id: str):
 @admin_bp.route("/stop/<client_id>")
 @login_required
 async def stop_client(request: Request, client_id: str):
-    """Sends a stop command to a specific client by setting a shared stop signal."""
-    stop_signals = request.app.shared_ctx.stop_signals
+    """Sends a stop command to a specific client by setting a shared stop signal and pushing directly via WS."""
+    from yc_logging import logger
+
+    # 1. Clear queue so client doesn't start next track
+    client_queues = getattr(request.app.shared_ctx, "client_queues", None)
+    if client_queues is not None and client_id in client_queues:
+        client_queues[client_id] = []
+
+    # 2. Update status immediately so dashboard reflects feedback
+    client_state = getattr(request.app.shared_ctx, "client_state", None)
+    if client_state and client_id in client_state:
+        state = client_state[client_id]
+        state["status"] = "Stopping..."
+        state["mode"] = "idle"
+        client_state[client_id] = state
+
+    # 3. Set signal fallback
+    stop_signals = getattr(request.app.shared_ctx, "stop_signals", None)
     if stop_signals is not None:
         stop_signals[client_id] = True
-        from yc_logging import logger
         logger.info("Set stop signal for client %s", client_id)
+
+    # 4. Direct instantaneous WS push if client is connected (check app.ctx.ws_by_id first)
+    ws_by_id = getattr(request.app.ctx, "ws_by_id", None) or getattr(request.app.shared_ctx, "ws_by_id", None)
+    if ws_by_id and client_id in ws_by_id:
+        try:
+            ws = ws_by_id[client_id]
+            await ws.send(json.dumps({"action": "stop"}))
+            logger.info("Directly pushed stop action to client %s via WS", client_id)
+        except Exception as e:
+            logger.warning("Failed direct WS stop push to %s: %s", client_id, e)
+
     if request.headers.get("accept") == "application/json" or request.args.get("json") == "true":
         return response.json({"status": "success"})
     prefix = request.app.blueprints["admin"].url_prefix
@@ -234,15 +298,94 @@ async def stop_client(request: Request, client_id: str):
 @login_required
 async def skip_client(request: Request, client_id: str):
     """Sends a skip command to a specific client."""
+    from yc_logging import logger
+
+    # 1. Update status immediately so dashboard reflects feedback
+    client_state = getattr(request.app.shared_ctx, "client_state", None)
+    if client_state and client_id in client_state:
+        state = client_state[client_id]
+        state["status"] = "Skipping..."
+        client_state[client_id] = state
+
+    # 2. Set signal fallback
     skip_signals = getattr(request.app.shared_ctx, "skip_signals", None)
     if skip_signals is not None:
         skip_signals[client_id] = True
-        from yc_logging import logger
         logger.info("Set skip signal for client %s", client_id)
+
+    # 3. Direct instantaneous WS push if client is connected (check app.ctx.ws_by_id first)
+    ws_by_id = getattr(request.app.ctx, "ws_by_id", None) or getattr(request.app.shared_ctx, "ws_by_id", None)
+    if ws_by_id and client_id in ws_by_id:
+        try:
+            ws = ws_by_id[client_id]
+            await ws.send(json.dumps({"action": "skip"}))
+            logger.info("Directly pushed skip action to client %s via WS", client_id)
+        except Exception as e:
+            logger.warning("Failed direct WS skip push to %s: %s", client_id, e)
+
     if request.headers.get("accept") == "application/json" or request.args.get("json") == "true":
         return response.json({"status": "success"})
     prefix = request.app.blueprints["admin"].url_prefix
     return response.redirect(prefix)
+
+@admin_bp.route("/restart/<client_id>")
+@login_required
+async def restart_client(request: Request, client_id: str):
+    """Sends a restart command to a specific client to restart current media from 0:00."""
+    from yc_logging import logger
+
+    client_state = getattr(request.app.shared_ctx, "client_state", None)
+    if client_state and client_id in client_state:
+        state = client_state[client_id]
+        state["status"] = "Restarting..."
+        state["listening_since"] = monotonic()
+        client_state[client_id] = state
+
+    restart_signals = getattr(request.app.shared_ctx, "restart_signals", None)
+    if restart_signals is not None:
+        restart_signals[client_id] = True
+
+    ws_by_id = getattr(request.app.ctx, "ws_by_id", None) or getattr(request.app.shared_ctx, "ws_by_id", None)
+    if ws_by_id and client_id in ws_by_id:
+        try:
+            ws = ws_by_id[client_id]
+            await ws.send(json.dumps({"action": "restart"}))
+            logger.info("Directly pushed restart action to client %s via WS", client_id)
+        except Exception as e:
+            logger.warning("Failed direct WS restart push to %s: %s", client_id, e)
+
+    if request.headers.get("accept") == "application/json" or request.args.get("json") == "true":
+        return response.json({"status": "success"})
+    prefix = request.app.blueprints["admin"].url_prefix
+    return response.redirect(prefix)
+
+@admin_bp.route("/seek/<client_id>/<timestamp:float>")
+@login_required
+async def seek_client(request: Request, client_id: str, timestamp: float):
+    """Sends a seek command to a specific client to jump to target timestamp (seconds)."""
+    from yc_logging import logger
+
+    client_state = getattr(request.app.shared_ctx, "client_state", None)
+    if client_state and client_id in client_state:
+        state = client_state[client_id]
+        if state.get("is_live", False):
+            return response.json({"status": "error", "message": "Live streams cannot be seeked"}, status=400)
+        
+        # Update listening_since to match new seek timestamp
+        state["listening_since"] = monotonic() - max(0.0, timestamp)
+        client_state[client_id] = state
+
+    # Direct WS push to client
+    ws_by_id = getattr(request.app.ctx, "ws_by_id", None) or getattr(request.app.shared_ctx, "ws_by_id", None)
+    if ws_by_id and client_id in ws_by_id:
+        try:
+            ws = ws_by_id[client_id]
+            await ws.send(json.dumps({"action": "seek", "timestamp": max(0.0, timestamp)}))
+            logger.info("Directly pushed seek action (timestamp=%.1f) to client %s via WS", timestamp, client_id)
+        except Exception as e:
+            logger.warning("Failed direct WS seek push to %s: %s", client_id, e)
+
+    return response.json({"status": "success", "timestamp": max(0.0, timestamp)})
 
 @admin_bp.route("/queue/<client_id>")
 @login_required
