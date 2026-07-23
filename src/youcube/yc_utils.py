@@ -9,8 +9,8 @@ Utils for string manipulation, data management etc.
 import json
 from json import JSONDecodeError
 from logging import getLogger
-from os import mkdir
-from os.path import abspath, dirname, exists, join
+from os import mkdir, walk
+from os.path import abspath, dirname, exists, getsize, join
 from re import RegexFlag
 from re import compile as re_compile
 from typing import Tuple
@@ -148,3 +148,28 @@ def load_config() -> dict:
         logger.warning("config.json must be a JSON object")
         return {}
     return data
+
+
+def get_data_folder_size_formatted() -> str:
+    """Calculates total size of DATA_FOLDER in MB/GB and formats it."""
+    if not exists(DATA_FOLDER):
+        return "0.0 MB"
+    total_bytes = 0
+    try:
+        for root, _, files in walk(DATA_FOLDER):
+            for f in files:
+                fp = join(root, f)
+                if exists(fp):
+                    try:
+                        total_bytes += getsize(fp)
+                    except OSError:
+                        pass
+    except OSError:
+        pass
+
+    mb = total_bytes / (1024 * 1024)
+    if mb >= 1024:
+        gb = mb / 1024
+        return f"{gb:.2f} GB"
+    return f"{mb:.1f} MB"
+

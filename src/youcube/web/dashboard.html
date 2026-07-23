@@ -54,6 +54,11 @@
                         <span class="text-xs font-semibold px-2 py-0.5 rounded bg-slate-200/50 dark:bg-slate-800/50 text-slate-500 dark:text-slate-400">
                             v{{ current_version }}
                         </span>
+                        <span class="text-xs font-semibold px-2.5 py-0.5 rounded-lg bg-sky-500/10 text-sky-600 dark:text-sky-400 border border-sky-500/20 flex items-center gap-1.5 shadow-sm" title="Total Cache Disk Space Used">
+                            <span>💾</span>
+                            <span>Cache:</span>
+                            <span id="cacheSizeText" class="font-bold font-mono">{{ cache_size }}</span>
+                        </span>
                         {% if latest_version and latest_version != current_version %}
                             <span class="text-xs font-bold px-2 py-0.5 rounded bg-amber-500/10 text-amber-500 border border-amber-500/20" title="Latest: v{{ latest_version }}">
                                 Update Available (v{{ latest_version }})
@@ -269,7 +274,15 @@
             };
 
             ws.onmessage = (event) => {
-                const clients = JSON.parse(event.data);
+                const data = JSON.parse(event.data);
+                const clients = Array.isArray(data) ? data : (data.clients || []);
+                const cacheSize = Array.isArray(data) ? null : data.cache_size;
+
+                if (cacheSize !== null && cacheSize !== undefined) {
+                    const cacheEl = document.getElementById('cacheSizeText');
+                    if (cacheEl) cacheEl.innerText = cacheSize;
+                }
+
                 renderTable(clients);
                 updateClientSelect(clients);
             };

@@ -18,7 +18,7 @@ from sanic import Blueprint, Request, response, Websocket
 from sanic.exceptions import WebsocketClosed
 from sanic_ext import render
 
-from yc_utils import load_config, VERSION
+from yc_utils import load_config, VERSION, get_data_folder_size_formatted
 
 admin_bp = Blueprint("admin", url_prefix="/admin")
 
@@ -179,11 +179,13 @@ async def dashboard(request: Request):
     
     loop = get_event_loop()
     latest_version = await loop.run_in_executor(None, fetch_latest_version)
+    cache_size = await loop.run_in_executor(None, get_data_folder_size_formatted)
     
     return await render("dashboard.html", context={
         "clients": clients,
         "current_version": VERSION,
         "latest_version": latest_version,
+        "cache_size": cache_size,
         "admin_prefix": request.app.blueprints["admin"].url_prefix
     })
 
@@ -191,11 +193,17 @@ async def dashboard(request: Request):
 @login_required
 async def admin_feed(request: Request, ws: Websocket):
     """Provides a live feed of client status to the admin dashboard."""
+    loop = get_event_loop()
     try:
         while True:
             client_state = request.app.shared_ctx.client_state
             clients = get_formatted_clients(client_state, request.app)
-            await ws.send(json.dumps(clients))
+            cache_size = await loop.run_in_executor(None, get_data_folder_size_formatted)
+            payload = {
+                "clients": clients,
+                "cache_size": cache_size
+            }
+            await ws.send(json.dumps(payload))
             await sleep(2)
     except WebsocketClosed:
         pass

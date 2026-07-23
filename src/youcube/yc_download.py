@@ -633,7 +633,7 @@ def _download_impl(
             "concurrent_fragment_downloads": 8,
             "extractor_args": {
                 "youtube": {
-                    "player_client": ["android", "ios", "mweb", "web"]
+                    "player_client": ["tv_embedded", "tv", "android", "ios", "mweb", "web"]
                 }
             }
         }
