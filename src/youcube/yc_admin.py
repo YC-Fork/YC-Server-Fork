@@ -78,20 +78,11 @@ def determine_media_type(state: dict) -> str:
     return "Audio"
 
 def get_formatted_clients(client_state, app=None) -> list:
-    """Helper to format the client state dictionary into a list and purge disconnected clients."""
+    """Helper to format the client state dictionary into a list."""
     clients = []
     if client_state:
-        ws_by_id = None
-        if app:
-            ws_by_id = getattr(app.ctx, "ws_by_id", None) or getattr(app.shared_ctx, "ws_by_id", None)
-
         now = monotonic()
-        stale_keys = []
         for client_id, state in list(client_state.items()):
-            if ws_by_id is not None and client_id not in ws_by_id:
-                stale_keys.append(client_id)
-                continue
-
             # Play Duration
             listening_since = state.get("listening_since")
             play_duration = "-"
@@ -124,9 +115,6 @@ def get_formatted_clients(client_state, app=None) -> list:
                 "duration": duration,
                 "elapsed": elapsed
             })
-
-        for k in stale_keys:
-            client_state.pop(k, None)
 
     return clients
 

@@ -82,6 +82,9 @@ AUDIO_FORMAT = "dfpwm"
 ROOT_DIR = dirname(dirname(dirname(abspath(__file__))))
 CONFIG_PATH = join(ROOT_DIR, "config.json")
 DATA_FOLDER = join(ROOT_DIR, "data")
+RAW_FOLDER = join(DATA_FOLDER, "raw")
+CONVERTED_AUDIO_FOLDER = join(DATA_FOLDER, "converted-audio")
+CONVERTED_VIDEO_FOLDER = join(DATA_FOLDER, "converted-video")
 
 
 def get_video_name(media_id: str, width: int, height: int) -> str:
@@ -95,19 +98,20 @@ def get_audio_name(media_id: str) -> str:
 
 
 def get_video_path(media_id: str, width: int, height: int) -> str:
-    """Returns the relative path to the requested video"""
-    return join(DATA_FOLDER, get_video_name(media_id, width, height))
+    """Returns the absolute path to the requested video in converted-video folder"""
+    return join(CONVERTED_VIDEO_FOLDER, get_video_name(media_id, width, height))
 
 
 def get_audio_path(media_id: str) -> str:
-    """Returns the relative path to the requested audio"""
-    return join(DATA_FOLDER, get_audio_name(media_id))
+    """Returns the absolute path to the requested audio in converted-audio folder"""
+    return join(CONVERTED_AUDIO_FOLDER, get_audio_name(media_id))
 
 
 def create_data_folder_if_not_present():
-    """Creates the data folder if it does not exist"""
-    if not exists(DATA_FOLDER):
-        mkdir(DATA_FOLDER)
+    """Creates the data folder and subfolders (raw, converted-audio, converted-video) if they do not exist"""
+    for folder in (DATA_FOLDER, RAW_FOLDER, CONVERTED_AUDIO_FOLDER, CONVERTED_VIDEO_FOLDER):
+        if not exists(folder):
+            mkdir(folder)
 
 
 def is_audio_already_downloaded(media_id: str) -> bool:

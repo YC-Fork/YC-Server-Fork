@@ -145,6 +145,25 @@ def setup_logging() -> Logger:
             pass
 
     if exists(LOGS_DIR):
+        # Clean up old log files, keeping only the 5 most recent logs
+        try:
+            from os import listdir, remove
+            from os.path import isfile, getmtime
+            log_files = []
+            for fname in listdir(LOGS_DIR):
+                fpath = join(LOGS_DIR, fname)
+                if isfile(fpath) and (fname.endswith(".txt") or fname.endswith(".log")):
+                    log_files.append((getmtime(fpath), fpath))
+            log_files.sort(key=lambda item: item[0], reverse=True)
+            if len(log_files) >= 5:
+                for stamp, fpath in log_files[4:]:  # Keep top 4 existing + 1 new current log = 5 total
+                    try:
+                        remove(fpath)
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
         log_file_path = getenv("YC_LOG_FILE")
         if not log_file_path:
             start_time_str = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")

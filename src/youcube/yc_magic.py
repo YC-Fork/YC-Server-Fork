@@ -114,29 +114,42 @@ class KillableThread(Thread):
         self.killed = True
 
 
-def run_with_live_output(cmd: list, handler: Callable[[str], None]) -> int:
+def run_with_live_output(cmd: list, handler: Callable[[str], None], check_cancelled: Callable[[], bool] = None) -> int:
     """
-    Runs a subprocess and allows handling output live
+    Runs a subprocess and allows handling output live, with cancellation support.
     """
     with Popen(cmd, stdout=PIPE, stderr=PIPE) as process:
 
         def live_output():
             line = []
-            while True:
-                read = process.stderr.read(1)
+            while process.poll() is None:
+                if check_cancelled and check_cancelled():
+                    process.kill()
+                    break
+                try:
+                    read = process.stderr.read(1)
+                except Exception:
+                    break
+                if not read:
+                    break
                 if read in (b"\r", b"\n"):  # handle \n and \r as new line characters
                     if len(line) != 0:  # ignore empty line
                         handler("".join(line))
                         line.clear()
                 else:
-                    line.append(read.decode("utf-8"))
+                    line.append(read.decode("utf-8", errors="ignore"))
 
         thread = KillableThread(target=live_output)
         thread.start()
 
-        process.wait()
-        thread.kill()
+        from time import sleep
+        while process.poll() is None:
+            if check_cancelled and check_cancelled():
+                process.kill()
+                break
+            sleep(0.2)
 
+        thread.kill()
         return process.returncode
 
 

@@ -59,7 +59,7 @@ from spotipy.client import Spotify
 # local modules
 from yc_admin import admin_bp
 from yc_colours import RESET, Foreground
-from yc_download import DATA_FOLDER, FFMPEG_PATH, SANJUUNI_PATH, download
+from yc_download import DATA_FOLDER, FFMPEG_PATH, SANJUUNI_PATH, DISABLE_OPENCL, download
 from yc_logging import NO_COLOR, setup_logging
 from yc_magic import run_function_in_thread_from_async_function
 from yc_spotify import SpotifyURLProcessor
@@ -68,6 +68,8 @@ from yc_utils import (
     create_data_folder_if_not_present,
     get_audio_name,
     get_video_name,
+    get_audio_path,
+    get_video_path,
     is_save,
     load_config,
     VIDEO_FORMAT,
@@ -145,9 +147,11 @@ async def get_vid(vid_file: str, tracker: int, max_bytes: int) -> List[str]:
 
 async def getchunk(media_file: str, chunkindex: int) -> bytes:
     """Returns a chunk of the given media file"""
-    async with await open_async(file=media_file, mode="rb") as file:
-        await file.seek(chunkindex * CHUNKS_AT_ONCE)
-        return await file.read(CHUNKS_AT_ONCE)
+    if exists(media_file):
+        async with await open_async(file=media_file, mode="rb") as file:
+            await file.seek(chunkindex * CHUNKS_AT_ONCE)
+            return await file.read(CHUNKS_AT_ONCE)
+    return b""
 
 
 def _remove_live_files(entry: dict) -> None:
@@ -177,7 +181,7 @@ def start_live_audio_stream(
 ) -> None:
     """Starts a live audio stream and writes dfpwm output to disk."""
     file_name = get_audio_name(media_id)
-    file_path = join(DATA_FOLDER, file_name)
+    file_path = get_audio_path(media_id)
     with live_streams_lock:
         entry = live_streams.get(media_id)
         if not entry:
@@ -472,6 +476,8 @@ class Actions:
         has_video_file = any(
             file.lower().endswith(f".{VIDEO_FORMAT}") for file in files
         )
+        out["is_video"] = has_video_file
+        out["has_video"] = has_video_file
         if client_state is not None:
             state = client_state.get(client_id) or {}
             state.update(
@@ -533,7 +539,7 @@ class Actions:
 
         if is_save(media_id):
             file_name = get_audio_name(message.get("id"))
-            file = join(DATA_FOLDER, file_name)
+            file = get_audio_path(media_id)
 
             live_entry = None
             if hasattr(request.app.ctx, "live_streams") and hasattr(
@@ -674,7 +680,7 @@ class Actions:
 
         if is_save(media_id):
             file_name = get_video_name(message.get("id"), width, height)
-            file = join(DATA_FOLDER, file_name)
+            file = get_video_path(media_id, width, height)
 
             if not exists(file):
                 if media_id.startswith("live-"):
@@ -701,12 +707,15 @@ class Actions:
         client_id = f"{id(ws):x}"
         client_version = message.get("client_version")
         nickname = message.get("nickname") or ""
+        logger.debug("HANDSHAKE from client_id=%s client_version=%s nickname=%s", client_id, client_version, nickname)
         if not client_version:
+            logger.warning("HANDSHAKE REJECTED: no client_version")
             return {
                 "action": "error",
                 "message": "Client version required",
             }
         if not is_compatible_version(client_version, VERSION):
+            logger.warning("HANDSHAKE REJECTED: version mismatch server=%s client=%s", VERSION, client_version)
             return {
                 "action": "error",
                 "message": f"Client version mismatch (Server: {VERSION}, Client: {client_version})",
@@ -1192,12 +1201,15 @@ def data_cache_cleaner(data: dict):
 def print_startup_banner(admin_enabled: bool):
     """Prints a startup banner with component status."""
     if NO_COLOR:
-        border = "=" * 40
+        boot_msg = ">>> Server Booting..."
+        border = "=" * 55
         title = "YC-Fork Server"
     else:
-        border = f"{Foreground.BRIGHT_BLUE}{'=' * 40}{RESET}"
+        boot_msg = f"{Foreground.BRIGHT_YELLOW}>>> Server Booting...{RESET}"
+        border = f"{Foreground.BRIGHT_BLUE}{'=' * 55}{RESET}"
         title = f"{Foreground.BRIGHT_CYAN}YC-Fork Server{RESET}"
 
+    logger.info(boot_msg)
     logger.info(border)
     logger.info(f" {title} v{VERSION}")
     logger.info(border)
@@ -1205,6 +1217,31 @@ def print_startup_banner(admin_enabled: bool):
     # Components
     components = []
     
+    # Sanjuuni GPU / OpenCL Check
+    sanjuuni_bin = SANJUUNI_PATH if exists(SANJUUNI_PATH) else which(SANJUUNI_PATH)
+    if not sanjuuni_bin:
+        components.append(("Sanjuuni GPU", "Disabled (Binary Not Found)", Foreground.RED))
+    elif DISABLE_OPENCL:
+        components.append(("Sanjuuni GPU", "Disabled (DISABLE_OPENCL=1)", Foreground.YELLOW))
+    else:
+        gpu_status = "Enabled (OpenCL)"
+        gpu_color = Foreground.GREEN
+        try:
+            import subprocess
+            clinfo_bin = which("clinfo")
+            if clinfo_bin:
+                res = subprocess.run([clinfo_bin], capture_output=True, text=True, timeout=2)
+                devices = [line.split(":", 1)[1].strip() for line in res.stdout.splitlines() if "Device Name" in line]
+                if devices:
+                    gpu_status = f"Enabled (GPU: {devices[0]})"
+                    gpu_color = Foreground.GREEN
+                else:
+                    gpu_status = "Fallback (CPU - No OpenCL device)"
+                    gpu_color = Foreground.YELLOW
+        except Exception:
+            pass
+        components.append(("Sanjuuni GPU", gpu_status, gpu_color))
+
     # Spotipy
     if spotipy:
         components.append(("Spotipy", "Enabled", Foreground.GREEN))
@@ -1423,6 +1460,14 @@ async def before_start(app: Sanic):
     Thread(target=skip_signal_watcher, args=(app,), daemon=True).start()
 
 
+@app.after_server_start
+async def after_start(app: Sanic):
+    if NO_COLOR:
+        logger.info(">>> Server booted successfully! Ready for connections.")
+    else:
+        logger.info(f"{Foreground.BRIGHT_GREEN}>>> Server booted successfully! Ready for connections.{RESET}")
+
+
 @app.route("/installer.lua", methods=["GET"])
 async def serve_installer_script(_request: Request):
     """Serves the Lua installer script."""
@@ -1433,7 +1478,7 @@ async def serve_installer_script(_request: Request):
 @app.route("/dfpwm/<media_id:str>/<chunkindex:int>")
 async def stream_dfpwm(_request: Request, media_id: str, chunkindex: int):
     """WIP HTTP mode"""
-    return raw(await getchunk(join(DATA_FOLDER, get_audio_name(media_id)), chunkindex))
+    return raw(await getchunk(get_audio_path(media_id), chunkindex))
 
 
 @app.route("/32vid/<media_id:str>/<width:int>/<height:int>/<tracker:int>")  # , stream=True
@@ -1444,7 +1489,7 @@ async def stream_32vid(
     return raw(
         "\n".join(
             await get_vid(
-                join(DATA_FOLDER, get_video_name(media_id, width, height)),
+                get_video_path(media_id, width, height),
                 tracker,
                 MAX_WS_PAYLOAD_BYTES,
             )
@@ -1527,6 +1572,7 @@ async def wshandler(request: Request, ws: Websocket):
         while True:
             message = await ws.recv()
             if message is None:
+                logger.info("%sws.recv() returned None - closing", prefix)
                 break
             if "get_queued_media" not in message:
                 logger.debug("%sMessage: %s", prefix, message)
@@ -1534,18 +1580,25 @@ async def wshandler(request: Request, ws: Websocket):
             try:
                 message: dict = load_json(message)
             except JSONDecodeError:
-                logger.debug("%sFaild to parse Json", prefix)
+                logger.warning("%sFailed to parse JSON: %s", prefix, message)
                 await ws.send(dumps({"action": "error", "message": "Faild to parse Json"}))
                 continue
 
-            if message.get("action") in actions:
-                response = await actions[message.get("action")](message, ws, request)
+            action = message.get("action")
+            if action in actions:
+                logger.debug("%sDispatching action: %s", prefix, action)
+                response = await actions[action](message, ws, request)
+                logger.debug("%sResponse action: %s", prefix, response.get("action") if isinstance(response, dict) else type(response))
                 await ws.send(dumps(response))
                 if (
-                    message.get("action") == "handshake"
+                    action == "handshake"
+                    and isinstance(response, dict)
                     and response.get("action") == "error"
                 ):
+                    logger.warning("%sHandshake failed, closing WebSocket", prefix)
                     await ws.close()
+            else:
+                logger.warning("%sUnknown action: %s", prefix, action)
     finally:
         with active_websockets_lock:
             active_websockets.discard(ws)

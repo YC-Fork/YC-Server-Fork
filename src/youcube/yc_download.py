@@ -9,7 +9,7 @@ Download Functionality of YC
 from asyncio import run_coroutine_threadsafe
 from hashlib import sha1
 from os import getenv, listdir, remove
-from os.path import abspath, dirname, exists, join
+from os.path import abspath, dirname, exists, join, getsize, getmtime
 from tempfile import TemporaryDirectory
 from time import time, sleep
 from typing import Any, Dict, Optional, Tuple
@@ -22,10 +22,15 @@ from yc_magic import run_with_live_output
 from yc_spotify import SpotifyURLProcessor
 from yc_utils import (
     DATA_FOLDER,
+    RAW_FOLDER,
+    CONVERTED_AUDIO_FOLDER,
+    CONVERTED_VIDEO_FOLDER,
     cap_width_and_height,
     create_data_folder_if_not_present,
     get_audio_name,
     get_video_name,
+    get_audio_path,
+    get_video_path,
     is_audio_already_downloaded,
     is_video_already_downloaded,
     load_config,
@@ -53,7 +58,7 @@ from yt_dlp.utils import DownloadError
 
 FFMPEG_PATH = getenv("FFMPEG_PATH", "ffmpeg")
 SANJUUNI_PATH = getenv("SANJUUNI_PATH", "sanjuuni")
-DISABLE_OPENCL = bool(getenv("DISABLE_OPENCL"))
+DISABLE_OPENCL = getenv("DISABLE_OPENCL", "").lower() in ("1", "true", "yes")
 DIRECT_AUDIO_EXTENSIONS = (
     ".mp3",
     ".aac",
@@ -64,6 +69,45 @@ DIRECT_AUDIO_EXTENSIONS = (
     ".wav",
 )
 LIVE_VIDEO_BUFFER_SECONDS = int(getenv("LIVE_VIDEO_BUFFER_SECONDS", "30"))
+RAW_CACHE_TTL_SECONDS = int(getenv("RAW_CACHE_TTL_SECONDS", "86400")) # 24 Hours default
+
+
+def get_cached_raw_file(media_id: str) -> Optional[str]:
+    """Returns absolute path to a cached raw download if it exists."""
+    if not exists(RAW_FOLDER):
+        return None
+    try:
+        for fname in listdir(RAW_FOLDER):
+            if fname.startswith(f"{media_id}.") and not (
+                fname.endswith(".part") or fname.endswith(".ytdl") or fname.endswith(".lock")
+            ):
+                fpath = join(RAW_FOLDER, fname)
+                if exists(fpath) and getsize(fpath) > 0:
+                    return fpath
+    except OSError:
+        pass
+    return None
+
+
+def clean_expired_raw_cache() -> None:
+    """Deletes raw download cache files older than RAW_CACHE_TTL_SECONDS (default 24h)."""
+    if not exists(RAW_FOLDER):
+        return
+    now = time()
+    try:
+        for fname in listdir(RAW_FOLDER):
+            fpath = join(RAW_FOLDER, fname)
+            if exists(fpath) and not (
+                fname.endswith(".part") or fname.endswith(".ytdl") or fname.endswith(".lock")
+            ):
+                try:
+                    if (now - getmtime(fpath)) > RAW_CACHE_TTL_SECONDS:
+                        remove(fpath)
+                        logger.info("Cleaned expired raw download (24h+): %s", fname)
+                except OSError:
+                    pass
+    except OSError:
+        pass
 
 
 class LockFile:
@@ -195,7 +239,7 @@ def download_video(
         total_frames: int = 0
 ):
     """
-    Converts the downloaded video to 32vid
+    Converts the downloaded video to 32vid directly using Sanjuuni at maximum quality.
     """
     update_client_status(client_state, client_id, "Converting video...")
     run_coroutine_threadsafe(
@@ -205,100 +249,101 @@ def download_video(
         loop,
     )
 
+    cached_file = get_cached_raw_file(media_id)
+    if cached_file and exists(cached_file):
+        input_file = cached_file
+    else:
+        raw_files = [f for f in listdir(temp_dir) if not f.endswith(".pre.mp4") and not f.endswith(".part") and not f.endswith(".ytdl")]
+        input_file = join(temp_dir, raw_files[0]) if raw_files else None
+
+    if not input_file or not exists(input_file):
+        logger.warning("No input video file found for media_id %s in temp_dir %s", media_id, temp_dir)
+        return
+
     if NO_COLOR:
         prefix = "[Sanjuuni]"
     else:
         prefix = f"{Foreground.BRIGHT_YELLOW}[Sanjuuni]{RESET} "
 
-    def handler(line):
-        # Intercept and correct 0 total frames / negative remaining time for variable framerate streams
-        if total_frames > 0:
-            import re
-            match = re.search(r"frame\s+(\d+)/0", line)
-            if match:
-                current_frame = int(match.group(1))
-                rem_frames = max(0, total_frames - current_frame)
-                fps_match = re.search(r"(\d+)\s+fps", line)
-                if fps_match:
-                    curr_fps = float(fps_match.group(1))
-                    if curr_fps > 0:
-                        rem_seconds = int(rem_frames / curr_fps)
-                        m = rem_seconds // 60
-                        s = rem_seconds % 60
-                        rem_str = f"{m:02d}:{s:02d}"
-                        line = re.sub(r"frame\s+\d+/0", f"frame {current_frame}/{total_frames}", line)
-                        line = re.sub(r"remaining\s+\d+:-\d+", f"remaining {rem_str}", line)
-                        line = re.sub(r"remaining\s+\d+:\d+", f"remaining {rem_str}", line)
+    import re
 
-        logger.debug("%s%s", prefix, line)
+    def handler(line):
+        clean_line = line
+        if total_frames and total_frames > 0 and "/0" in line:
+            try:
+                m = re.search(r"frame\s+(\d+)/0\s+\(elapsed\s+([\d:]+)", line)
+                if m:
+                    curr_frame = int(m.group(1))
+                    fps_match = re.search(r"([\d.]+)\s+fps", line)
+                    curr_fps = float(fps_match.group(1)) if fps_match else 20.0
+                    rem_frames = max(0, total_frames - curr_frame)
+                    rem_sec = int(rem_frames / curr_fps) if curr_fps > 0 else 0
+                    rem_min, rem_sec = divmod(rem_sec, 60)
+                    rem_str = f"{rem_min:02d}:{rem_sec:02d}"
+                    clean_line = re.sub(
+                        r"frame\s+\d+/0\s+\(elapsed\s+[\d:]+,\s+remaining\s+[^,\)]+",
+                        f"frame {curr_frame}/{total_frames} (elapsed {m.group(2)}, remaining {rem_str}",
+                        line,
+                    )
+            except Exception:
+                clean_line = line
+
+        if any(w in clean_line.lower() for w in ("opencl", "device", "using")):
+            logger.info("%s%s", prefix, clean_line)
+        else:
+            logger.debug("%s%s", prefix, clean_line)
+
+        update_client_status(client_state, client_id, f"Converting: {clean_line}")
+
         run_coroutine_threadsafe(
-            resp.send(dumps({"action": "status", "message": line})), loop
+            resp.send(dumps({"action": "status", "message": clean_line})), loop
         )
+
+    def is_cancelled() -> bool:
+        if resp and hasattr(resp, "closed") and resp.closed:
+            return True
+        if client_state is not None and client_id and client_id not in client_state:
+            return True
+        return False
+
+    final_video_path = get_video_path(media_id, width, height)
+    tmp_video_path = final_video_path + ".tmp"
+
+    cmd = [
+        SANJUUNI_PATH,
+        "--width=" + str(width),
+        "--height=" + str(height),
+        "-i",
+        input_file,
+        "--raw",
+        "--ordered",
+        "-o",
+        tmp_video_path,
+    ]
+    if DISABLE_OPENCL:
+        cmd.append("--disable-opencl")
 
     returncode = run_with_live_output(
-        [
-            SANJUUNI_PATH,
-            "--width=" + str(width),
-            "--height=" + str(height),
-            "-i",
-            join(temp_dir, listdir(temp_dir)[0]),
-            "--raw",
-            "-o",
-            join(DATA_FOLDER, get_video_name(media_id, width, height)),
-            "--disable-opencl" if DISABLE_OPENCL else "",
-        ],
+        cmd,
         handler,
+        check_cancelled=is_cancelled,
     )
 
-    if returncode != 0:
-        logger.warning("Sanjuuni exited with %s", returncode)
-        run_coroutine_threadsafe(
-            resp.send(dumps({"action": "error", "message": "Faild to convert video!"})),
-            loop,
-        )
+    if returncode == 0 and exists(tmp_video_path):
+        from os import replace
+        replace(tmp_video_path, final_video_path)
     else:
-        # Fix the 0 FPS issue and cap FPS to 20 for smoother CC playback
-        video_file_path = join(DATA_FOLDER, get_video_name(media_id, width, height))
-        try:
-            with open(video_file_path, "r", encoding="utf-8") as f:
-                lines = f.readlines()
-            
-            if len(lines) >= 2:
-                version_header = lines[0]
-                try:
-                    source_fps = float(lines[1].strip())
-                except ValueError:
-                    source_fps = 0.0
-
-                if source_fps <= 0.0:
-                    source_fps = float(fps) if (fps and fps > 0) else 20.0
-
-                target_fps = 20.0
-                if source_fps > target_fps:
-                    # Downsample frames to target_fps (20 FPS)
-                    frames = lines[2:]
-                    total_duration = len(frames) / source_fps
-                    total_target_frames = int(total_duration * target_fps)
-                    
-                    downsampled_frames = []
-                    for j in range(total_target_frames):
-                        orig_index = int(round((j / target_fps) * source_fps))
-                        if orig_index < len(frames):
-                            downsampled_frames.append(frames[orig_index])
-                            
-                    new_lines = [version_header, f"{int(target_fps)}\n"] + downsampled_frames
-                    with open(video_file_path, "w", encoding="utf-8") as f:
-                        f.writelines(new_lines)
-                    logger.info("Downsampled 32vid from %s FPS to %s FPS (reduced %s to %s frames)", 
-                                source_fps, target_fps, len(frames), len(downsampled_frames))
-                else:
-                    # Just write the corrected FPS if it was 0
-                    lines[1] = f"{int(source_fps)}\n"
-                    with open(video_file_path, "w", encoding="utf-8") as f:
-                        f.writelines(lines)
-                    logger.info("Fixed 32vid header FPS, set to %s", int(source_fps))
-        except Exception as exc:
-            logger.warning("Failed to process 32vid FPS header: %s", exc)
+        if exists(tmp_video_path):
+            try:
+                remove(tmp_video_path)
+            except OSError:
+                pass
+        if returncode != 0:
+            logger.warning("Sanjuuni exited with %s", returncode)
+            run_coroutine_threadsafe(
+                resp.send(dumps({"action": "error", "message": "Failed to convert video!"})),
+                loop,
+            )
 
 
 def download_audio(temp_dir: str, media_id: str, resp: Websocket, loop, client_id: str = None, client_state = None):
@@ -322,21 +367,46 @@ def download_audio(temp_dir: str, media_id: str, resp: Websocket, loop, client_i
         logger.debug("%s%s", prefix, line)
         # TODO: send message to resp
 
+    cached_file = get_cached_raw_file(media_id)
+    if cached_file and exists(cached_file):
+        input_file = cached_file
+    else:
+        raw_files = [f for f in listdir(temp_dir) if not f.endswith(".part") and not f.endswith(".ytdl")]
+        input_file = join(temp_dir, raw_files[0]) if raw_files else None
+
+    if not input_file or not exists(input_file):
+        logger.warning("No input audio file found for media_id %s in temp_dir %s", media_id, temp_dir)
+        return
+
+    final_audio_path = get_audio_path(media_id)
+    tmp_audio_path = final_audio_path + ".tmp"
+
     returncode = run_with_live_output(
         [
             FFMPEG_PATH,
             "-i",
-            join(temp_dir, listdir(temp_dir)[0]),
+            input_file,
             "-f",
             "dfpwm",
             "-ar",
             "48000",
             "-ac",
             "1",
-            join(DATA_FOLDER, get_audio_name(media_id)),
+            "-y",
+            tmp_audio_path,
         ],
         handler,
     )
+
+    if returncode == 0 and exists(tmp_audio_path):
+        from os import replace
+        replace(tmp_audio_path, final_audio_path)
+    else:
+        if exists(tmp_audio_path):
+            try:
+                remove(tmp_audio_path)
+            except OSError:
+                pass
 
     if returncode != 0:
         logger.warning("FFmpeg exited with %s", returncode)
@@ -438,6 +508,35 @@ def download(
     """
     Downloads and converts the media from the give URL
     """
+    try:
+        return _download_impl(
+            url, resp, loop, width, height, spotify_url_processor, client_id, client_state
+        )
+    except Exception as exc:
+        err_msg = str(exc)
+        logger.error("Unhandled error during download for client %s: %s", client_id or "unknown", exc, exc_info=True)
+        update_client_status(client_state, client_id, "Download Error", title=url)
+        run_coroutine_threadsafe(
+            resp.send(dumps({"action": "error", "message": f"Server Error: {err_msg}"})),
+            loop,
+        )
+        return (
+            {"action": "error", "message": f"Server Error: {err_msg}"},
+            [],
+            None,
+        )
+
+
+def _download_impl(
+        url: str,
+        resp: Websocket,
+        loop,
+        width: int,
+        height: int,
+        spotify_url_processor: SpotifyURLProcessor,
+        client_id: str = None,
+        client_state = None,
+) -> Tuple[Dict[str, Any], list, Optional[Dict]]:
     update_client_status(client_state, client_id, "Resolving URL...", url=url)
 
     is_video = width is not None and height is not None
@@ -512,10 +611,18 @@ def download(
         path_settings = config.get("path_settings", {}) if isinstance(config, dict) else {}
         cookie_file = path_settings.get("cookie_file")
         js_runtimes = path_settings.get("js_runtimes")
-        format_selector = "bestvideo+bestaudio/best" if is_video else "bestaudio/best"
+        format_selector = (
+            "bestvideo[height<=720][vcodec^=avc1]+bestaudio[acodec^=mp4a]/"
+            "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/"
+            "bestvideo[height<=720]+bestaudio/"
+            "bestvideo[vcodec^=avc1]+bestaudio[acodec^=mp4a]/"
+            "bestvideo+bestaudio/best"
+            if is_video
+            else "bestaudio/best"
+        )
         yt_dl_options = {
             "format": format_selector,
-            "outtmpl": join(temp_dir, "%(id)s.%(ext)s"),
+            "outtmpl": join(RAW_FOLDER, "%(id)s.%(ext)s"),
             "default_search": "auto",
             "restrictfilenames": True,
             "extract_flat": "in_playlist",
@@ -526,8 +633,7 @@ def download(
             "concurrent_fragment_downloads": 8,
             "extractor_args": {
                 "youtube": {
-                    "player_client": ["android", "web", "default"],
-                    "skip": ["webpage", "configs"]
+                    "player_client": ["android", "ios", "mweb", "web"]
                 }
             }
         }
@@ -582,8 +688,18 @@ def download(
                 height = None
                 update_client_status(client_state, client_id, "Direct Stream", title=url)
                 return build_direct_audio_response(url)
+
+            err_msg = str(e)
+            if "DRM protected" in err_msg or "DRM" in err_msg:
+                clean_err = "This track is DRM protected (SoundCloud Go+ / Copyright)"
+                update_client_status(client_state, client_id, "DRM Error", title=url)
+            else:
+                clean_err = err_msg.split('\n')[0] if '\n' in err_msg else err_msg
+                update_client_status(client_state, client_id, "Media Error", title=url)
+
+            logger.warning("Media extraction failed for client %s: %s", client_id or "unknown", clean_err)
             return (
-                {"action": "error", "message": str(e)},
+                {"action": "error", "message": clean_err},
                 [],
                 None,
             )
@@ -708,6 +824,7 @@ def download(
             )
 
         create_data_folder_if_not_present()
+        clean_expired_raw_cache()
 
         with LockFile(join(DATA_FOLDER, media_id)):
             audio_downloaded = is_audio_already_downloaded(media_id)
@@ -715,52 +832,68 @@ def download(
                 is_video_already_downloaded(media_id, width, height) if is_video else True
             )
 
-            if not audio_downloaded or (not video_downloaded and is_video):
-                run_coroutine_threadsafe(
-                    resp.send(
-                        dumps({"action": "status", "message": "Downloading resource ..."})
-                    ),
-                    loop,
-                )
+            cached_raw = get_cached_raw_file(media_id)
 
-                try:
-                    yt_dl.process_ie_result(data, download=True)
-                except DownloadError as e:
-                    if is_video and is_format_unavailable_error(e):
-                        # Decide fallback based on actual download failure instead of
-                        # incomplete pre-extraction metadata.
-                        is_video = False
-                        width = None
-                        height = None
-                        yt_dl.params["format"] = "bestaudio/best"
-                        run_coroutine_threadsafe(
-                            resp.send(
-                                dumps(
-                                    {
-                                        "action": "status",
-                                        "message": "Video not available, falling back to audio.",
-                                    }
-                                )
-                            ),
-                            loop,
-                        )
-                        audio_downloaded = is_audio_already_downloaded(media_id)
-                        video_downloaded = True
-                        if not audio_downloaded:
-                            try:
-                                yt_dl.process_ie_result(data, download=True)
-                            except DownloadError as retry_error:
-                                return (
-                                    {"action": "error", "message": str(retry_error)},
-                                    [],
-                                    None,
-                                )
-                    else:
-                        return (
-                            {"action": "error", "message": str(e)},
-                            [],
-                            None,
-                        )
+            if not audio_downloaded or (not video_downloaded and is_video):
+                if cached_raw:
+                    logger.info("Found cached raw download for media %s (skipping yt-dlp): %s", media_id, cached_raw)
+                    update_client_status(client_state, client_id, "Using cached video...")
+                    run_coroutine_threadsafe(
+                        resp.send(
+                            dumps({"action": "status", "message": "Using cached raw download ..."})
+                        ),
+                        loop,
+                    )
+                else:
+                    run_coroutine_threadsafe(
+                        resp.send(
+                            dumps({"action": "status", "message": "Downloading resource ..."})
+                        ),
+                        loop,
+                    )
+
+                    try:
+                        yt_dl.process_ie_result(data, download=True)
+                    except DownloadError as e:
+                        if is_video and is_format_unavailable_error(e):
+                            # Decide fallback based on actual download failure instead of
+                            # incomplete pre-extraction metadata.
+                            is_video = False
+                            width = None
+                            height = None
+                            yt_dl.params["format"] = "bestaudio/best"
+                            run_coroutine_threadsafe(
+                                resp.send(
+                                    dumps(
+                                        {
+                                            "action": "status",
+                                            "message": "Video not available, falling back to audio.",
+                                        }
+                                    )
+                                ),
+                                loop,
+                            )
+                            audio_downloaded = is_audio_already_downloaded(media_id)
+                            video_downloaded = True
+                            if not audio_downloaded:
+                                try:
+                                    yt_dl.process_ie_result(data, download=True)
+                                except DownloadError as retry_error:
+                                    return (
+                                        {"action": "error", "message": str(retry_error)},
+                                        [],
+                                        None,
+                                    )
+                        else:
+                            err_msg = str(e)
+                            clean_err = err_msg.split('\n')[0] if '\n' in err_msg else err_msg
+                            update_client_status(client_state, client_id, "Download Error", title=data.get("title") or url)
+                            logger.warning("Download failed for client %s: %s", client_id or "unknown", clean_err)
+                            return (
+                                {"action": "error", "message": clean_err},
+                                [],
+                                None,
+                            )
 
             # TODO: Thread audio & video download
 
@@ -782,6 +915,8 @@ def download(
         "view_count": data.get("view_count"),
         "channel": data.get("channel") or data.get("uploader") or data.get("artist"),
         "duration": data.get("duration"),
+        "is_video": is_video,
+        "has_video": is_video,
     }
 
     # Only return playlist_videos if there are videos in playlist_videos
